@@ -116,7 +116,8 @@ the executable."
              (file-name-directory (locate-library "vterm.el" t))))
            (make-commands
             (concat
-             "cd " vterm-directory "; \
+             "set -e \
+             cd " vterm-directory "; \
              mkdir -p build; \
              cd build; \
              cmake -G 'Unix Makefiles' "
@@ -130,7 +131,7 @@ the executable."
       (if (zerop (let ((inhibit-read-only t))
                    (call-process "sh" nil buffer t "-c" make-commands)))
           (message "Compilation of `emacs-libvterm' module succeeded")
-        (error "Compilation of `emacs-libvterm' module failed!")))))
+        (error "Compilation of `emacs-libvterm' module failed!\n %s" (buffer-string))))))
 
 ;; If the vterm-module is not compiled yet, compile it
 (unless (require 'vterm-module nil t)
@@ -779,7 +780,7 @@ Exceptions are defined by `vterm-keymap-exceptions'."
            :name "vterm"
            :buffer (current-buffer)
            :command
-           `("/bin/sh" "-c"
+           `("/bin/bash" "-c"
              ,(format
                "stty -nl sane %s erase ^? rows %d columns %d >/dev/null && exec %s"
                ;; Some stty implementations (i.e. that of *BSD) do not

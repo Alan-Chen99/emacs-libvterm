@@ -3,6 +3,8 @@ include(ExternalProject)
 
 project(emacs-libvterm C)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD" OR CMAKE_SYSTEM_NAME STREQUAL "OpenBSD" OR CMAKE_SYSTEM_NAME STREQUAL "NetBSD")
    set(LIBVTERM_BUILD_COMMAND "gmake")
 else()

@@ -175,7 +175,9 @@ emacs_value selected_window(emacs_env *env) {
 }
 
 void set_cursor_type(emacs_env *env, emacs_value cursor_type) {
-  env->funcall(env, Fset, 2, (emacs_value[]){Qcursor_type, cursor_type});
+  // https://github.com/akermu/emacs-libvterm/issues/342
+  // env->funcall(env, Fset, 2, (emacs_value[]){Qcursor_type, cursor_type});
+  return;
 }
 
 void set_cursor_blink(emacs_env *env, bool blink) {
