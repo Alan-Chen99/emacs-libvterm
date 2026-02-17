@@ -317,6 +317,18 @@ If no region is selected when the enter key is pressed it will copy the current
 line from start to end. If `vterm-copy-exclude-prompt` is true it will skip
 the prompt and not include it in the copy.
 
+## `vterm-toggle-follow-cursor`
+
+Toggle whether terminal output controls the buffer cursor position.
+The default keybinding is `C-c C-s`.
+
+You can set the default behavior with:
+
+```elisp
+(setq vterm-follow-cursor t)   ;; app controls cursor (default)
+(setq vterm-follow-cursor nil) ;; keep cursor where it is
+```
+
 ## Mouse
 
 When the program in the terminal turns on mouse reporting (tmux with

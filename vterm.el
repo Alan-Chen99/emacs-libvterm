@@ -116,7 +116,9 @@ the executable."
              (file-name-directory (locate-library "vterm.el" t))))
            (make-commands
             (concat
-             "cd " vterm-directory "; \
+             "set -e \
+             cd " vterm-directory "; \
+             [ -e build ] && rm -r build; \
              mkdir -p build; \
              cd build; \
              cmake -G 'Unix Makefiles' "
@@ -130,7 +132,7 @@ the executable."
       (if (zerop (let ((inhibit-read-only t))
                    (call-process "sh" nil buffer t "-c" make-commands)))
           (message "Compilation of `emacs-libvterm' module succeeded")
-        (error "Compilation of `emacs-libvterm' module failed!")))))
+        (error "Compilation of `emacs-libvterm' module failed!\n %s" (buffer-string))))))
 
 ;; If the vterm-module is not compiled yet, compile it
 (unless (require 'vterm-module nil t)
@@ -153,6 +155,8 @@ the executable."
 (declare-function vterm--set-pty-name "vterm-module")
 (declare-function vterm--get-pwd-raw "vterm-module")
 (declare-function vterm--reset-point "vterm-module")
+(declare-function vterm--set-follow-cursor "vterm-module")
+(declare-function vterm--set-follow-cursor-shape "vterm-module")
 (declare-function vterm--get-icrnl "vterm-module")
 (declare-function vterm--get-mouse-mode "vterm-module")
 (declare-function vterm--get-altscreen "vterm-module")
@@ -416,6 +420,30 @@ leaves the wheel to scroll the Emacs window."
   :type '(choice (const :tag "Scroll the window" nil) natnum)
   :group 'vterm)
 
+(defcustom vterm-follow-cursor t
+  "When non-nil, terminal output keeps point at the app cursor.
+
+When nil, point stays where it is during redraw until moved explicitly
+with commands such as `vterm-reset-cursor-point'."
+  :type 'boolean
+  :group 'vterm)
+
+(defcustom vterm-follow-cursor-shape nil
+  "When non-nil, terminal output controls the Emacs cursor shape.
+
+When nil, cursor shape is controlled by regular Emacs settings."
+  :type 'boolean
+  :group 'vterm)
+
+(defcustom vterm-follow-window-size t
+  "When non-nil, window resizes automatically sync to the terminal.
+
+When nil, the terminal dimensions are not updated on window resize
+and you must call `vterm-sync-window-size' manually.  This is
+independent of `vterm-follow-cursor'."
+  :type 'boolean
+  :group 'vterm)
+
 (defcustom vterm-copy-exclude-prompt t
   "When not-nil, the prompt is not included by `vterm-copy-mode-done'."
   :type 'boolean
@@ -602,6 +630,9 @@ Only background is used."
 (defvar-local vterm--delete-char-function (symbol-function #'delete-char))
 (defvar-local vterm--delete-region-function (symbol-function #'delete-region))
 (defvar-local vterm--copy-mode-fake-newlines nil)
+(defvar-local vterm--follow-cursor nil)
+(defvar-local vterm--follow-cursor-shape nil)
+(defvar-local vterm--follow-window-size nil)
 
 (defvar vterm-timer-delay 0.1
   "Delay for refreshing the buffer after receiving updates from libvterm.
@@ -798,6 +829,8 @@ when a filter returns nil, lookup skips the parent keymap.")
     (define-key map (kbd "C-c C-u")             #'vterm--self-insert)
     (define-key map [remap self-insert-command] #'vterm--self-insert)
     (define-key map (kbd "C-c C-r")             #'vterm-reset-cursor-point)
+    (define-key map (kbd "C-c C-s")             #'vterm-toggle-follow-cursor)
+    (define-key map (kbd "C-c C-w")             #'vterm-sync-window-size)
     (define-key map (kbd "C-c C-n")             #'vterm-next-prompt)
     (define-key map (kbd "C-c C-p")             #'vterm-previous-prompt)
     (define-key map (kbd "C-c C-t")             #'vterm-copy-mode)
@@ -843,15 +876,21 @@ when a filter returns nil, lookup skips the parent keymap.")
                                        "COLUMNS")
                                      process-environment))
         (process-adaptive-read-buffering nil)
-        (width (max (- (window-max-chars-per-line) (vterm--get-margin-width))
-                    vterm-min-window-width)))
-    (setq vterm--term (vterm--new (window-body-height)
+        (width (max (- (window-body-width) (vterm--get-margin-width))
+                    vterm-min-window-width))
+        (height (1- (window-body-height))))
+    (setq vterm--term (vterm--new height
                                   width vterm-max-scrollback
                                   vterm-disable-bold-font
                                   vterm-disable-underline
                                   vterm-disable-inverse-video
                                   vterm-ignore-blink-cursor
                                   vterm-set-bold-highbright))
+    (setq-local vterm--follow-cursor vterm-follow-cursor)
+    (setq-local vterm--follow-cursor-shape vterm-follow-cursor-shape)
+    (setq-local vterm--follow-window-size vterm-follow-window-size)
+    (vterm--set-follow-cursor vterm--term vterm--follow-cursor)
+    (vterm--set-follow-cursor-shape vterm--term vterm--follow-cursor-shape)
     (setq buffer-read-only t)
     (setq-local scroll-conservatively 101)
     (setq-local scroll-margin 0)
@@ -871,7 +910,7 @@ when a filter returns nil, lookup skips the parent keymap.")
            :name "vterm"
            :buffer (current-buffer)
            :command
-           `("/bin/sh" "-c"
+           `("/bin/bash" "-c"
              ,(format
                "stty -nl sane %s erase ^? rows %d columns %d >/dev/null && exec %s"
                ;; Some stty implementations (i.e. that of *BSD) do not
@@ -1290,7 +1329,13 @@ prefix argument ARG or with \\[universal-argument]."
        (and vterm-clear-scrollback-when-clearing (not arg))
        (and arg (not vterm-clear-scrollback-when-clearing)))
       (vterm-clear-scrollback))
-  (vterm-send-key "l" nil nil :ctrl))
+  (vterm-send-key "l" nil nil :ctrl)
+  (unless vterm-follow-cursor
+    ;; does not make sense to keep cursor on clear
+    ;; we reset, but should do that after the termainl did the clearing
+    ;; sit-for is hack to do that
+    (sit-for 0.01)
+    (vterm-reset-cursor-point)))
 
 (defun vterm-undo ()
   "Send `C-_' to the libvterm."
@@ -1542,7 +1587,15 @@ Argument BUFFER the terminal buffer."
             (windows (get-buffer-window-list)))
         (setq vterm--redraw-timer nil)
         (when vterm--term
-          (vterm--redraw vterm--term)
+          (let ((pt (point))
+                (mk (mark t))
+                (mark-was-active mark-active))
+            (vterm--redraw vterm--term)
+            (unless vterm--follow-cursor
+              (goto-char (min pt (point-max)))
+              (when mk
+                (set-marker (mark-marker) (min mk (point-max)) (current-buffer)))
+              (setq mark-active mark-was-active)))
           (unless (zerop (window-hscroll))
             (when (cl-member (selected-window) windows :test #'eq)
               (set-window-hscroll (selected-window) 0))))))))
@@ -1673,6 +1726,19 @@ Argument EVENT process event."
 
 (advice-add #'text-scale-mode :after #'vterm--text-scale-mode)
 
+(defun vterm--calculate-size (process windows)
+  "Calculate terminal dimensions for PROCESS given WINDOWS.
+Return (WIDTH . HEIGHT) after applying margin and minimum-width
+adjustments, or nil when dimensions are non-positive."
+  (let* ((size (funcall window-adjust-process-window-size-function
+                        process windows))
+         (width (car size))
+         (height (1- (cdr size))))
+    (setq width (- width (vterm--get-margin-width)))
+    (setq width (max width vterm-min-window-width))
+    (when (and (> width 0) (> height 0))
+      (cons width height))))
+
 (defun vterm--window-adjust-process-window-size (process windows)
   "Adjust width of window WINDOWS associated to process PROCESS.
 
@@ -1681,20 +1747,14 @@ Argument EVENT process event."
   ;; possible.  Hence, we must not call this function when the minor mode is
   ;; enabled, otherwise the buffer would be redrawn, messing around with the
   ;; position of the point.
-  (unless vterm-copy-mode
-    (let* ((size (funcall window-adjust-process-window-size-function
-                          process windows))
-           (width (car size))
-           (height (cdr size))
-           (inhibit-read-only t))
-      (setq width (- width (vterm--get-margin-width)))
-      (setq width (max width vterm-min-window-width))
-      (when (and (processp process)
-                 (process-live-p process)
-                 (> width 0)
-                 (> height 0))
-        (vterm--set-size vterm--term height width)
-        (cons width height)))))
+  (when (and (not vterm-copy-mode) vterm--follow-window-size)
+    (when-let* ((dims (vterm--calculate-size process windows))
+                (width (car dims))
+                (height (cdr dims)))
+      (let ((inhibit-read-only t))
+        (when (and (processp process) (process-live-p process))
+          (vterm--set-size vterm--term height width)
+          dims)))))
 
 (defun vterm--get-margin-width ()
   "Get margin width of vterm buffer when `display-line-numbers-mode' is enabled."
@@ -1941,6 +2001,75 @@ Effectively toggle between the two positions."
   (when vterm--term
     (save-excursion
       (vterm-reset-cursor-point))))
+
+(defun vterm-set-follow-cursor (follow)
+  "Set whether terminal output moves point to the app cursor.
+
+Argument FOLLOW controls whether app output moves point."
+  (when vterm--term
+    (setq-local vterm--follow-cursor follow)
+    (vterm--set-follow-cursor vterm--term vterm--follow-cursor)
+    (when vterm--follow-cursor
+      (vterm-reset-cursor-point))))
+
+(defun vterm-set-follow-cursor-shape (follow)
+  "Set whether terminal output controls the Emacs cursor shape.
+
+Argument FOLLOW controls whether app output updates cursor shape."
+  (when vterm--term
+    (setq-local vterm--follow-cursor-shape follow)
+    (vterm--set-follow-cursor-shape vterm--term vterm--follow-cursor-shape)
+    (when vterm--follow-cursor-shape
+      (vterm--invalidate))))
+
+(defun vterm-toggle-follow-cursor ()
+  "Toggle whether terminal output moves point to the app cursor."
+  (interactive)
+  (vterm-set-follow-cursor (not vterm--follow-cursor))
+  (message "vterm cursor mode: %s"
+           (if vterm--follow-cursor
+               "app controls cursor"
+             "cursor stays where it is")))
+
+(defun vterm-toggle-follow-cursor-shape ()
+  "Toggle whether terminal output controls Emacs cursor shape."
+  (interactive)
+  (vterm-set-follow-cursor-shape (not vterm--follow-cursor-shape))
+  (message "vterm cursor shape mode: %s"
+           (if vterm--follow-cursor-shape
+               "app controls cursor shape"
+             "cursor shape stays as configured")))
+
+(defun vterm-set-follow-window-size (follow)
+  "Set whether window resizes automatically sync to the terminal.
+
+Argument FOLLOW controls whether window resizes update terminal dimensions."
+  (setq-local vterm--follow-window-size follow))
+
+(defun vterm-toggle-follow-window-size ()
+  "Toggle whether window resizes automatically sync to the terminal."
+  (interactive)
+  (vterm-set-follow-window-size (not vterm--follow-window-size))
+  (message "vterm window size sync: %s"
+           (if vterm--follow-window-size
+               "automatic"
+             "manual (use vterm-sync-window-size)")))
+
+(defun vterm-sync-window-size ()
+  "Sync terminal size to current window dimensions.
+Useful after window resize when `vterm-follow-window-size' is nil,
+since automatic resizing is suppressed in that mode."
+  (interactive)
+  (when (and vterm--term vterm--process (process-live-p vterm--process))
+    (when-let* ((windows (get-buffer-window-list nil nil t))
+                (dims (vterm--calculate-size vterm--process windows))
+                (width (car dims))
+                (height (cdr dims)))
+      (let ((inhibit-read-only t))
+        (vterm--set-size vterm--term height width)
+        (set-process-window-size vterm--process height width)
+        (vterm--reset-point vterm--term)
+        (message "vterm size synced: %dx%d" width height)))))
 
 (defun vterm-mouse-reporting-p ()
   "Return non-nil if the application has enabled mouse reporting.

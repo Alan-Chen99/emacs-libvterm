@@ -599,6 +599,10 @@ static int term_movecursor(VTermPos new, VTermPos old, int visible,
 }
 
 static void term_redraw_cursor(Term *term, emacs_env *env) {
+  if (!term->follow_cursor_shape) {
+    return;
+  }
+
   if (term->cursor.cursor_blink_changed) {
     term->cursor.cursor_blink_changed = false;
     set_cursor_blink(env, term->cursor.cursor_blink);
@@ -637,7 +641,9 @@ static void term_redraw(Term *term, emacs_env *env) {
     refresh_scrollback(term, env);
     refresh_screen(term, env);
     term->linenum_added = term->linenum - oldlinenum;
-    adjust_topline(term, env);
+    if (term->follow_cursor) {
+      adjust_topline(term, env);
+    }
     term->linenum_added = 0;
   }
 
@@ -1326,6 +1332,8 @@ emacs_value Fvterm_new(emacs_env *env, ptrdiff_t nargs, emacs_value args[],
   term->disable_underline = disable_underline;
   term->disable_inverse_video = disable_inverse_video;
   term->ignore_blink_cursor = ignore_blink_cursor;
+  term->follow_cursor = true;
+  term->follow_cursor_shape = false;
   emacs_value newline = env->make_string(env, "\n", 1);
   for (int i = 0; i < term->height; i++) {
     insert(env, newline);
@@ -1641,12 +1649,32 @@ emacs_value Fvterm_mouse_button(emacs_env *env, ptrdiff_t nargs,
 }
 
 emacs_value Fvterm_reset_cursor_point(emacs_env *env, ptrdiff_t nargs,
-                                      emacs_value args[], void *data) {
+                                       emacs_value args[], void *data) {
   Term *term = env->get_user_ptr(env, args[0]);
   int line = row_to_linenr(term, term->cursor.row);
   goto_line(env, line);
   goto_col(term, env, term->cursor.row, term->cursor.col);
   return point(env);
+}
+
+emacs_value Fvterm_set_follow_cursor(emacs_env *env, ptrdiff_t nargs,
+                                     emacs_value args[], void *data) {
+  Term *term = env->get_user_ptr(env, args[0]);
+  term->follow_cursor = env->is_not_nil(env, args[1]);
+  return term->follow_cursor ? Qt : Qnil;
+}
+
+emacs_value Fvterm_set_follow_cursor_shape(emacs_env *env, ptrdiff_t nargs,
+                                           emacs_value args[], void *data) {
+  Term *term = env->get_user_ptr(env, args[0]);
+  term->follow_cursor_shape = env->is_not_nil(env, args[1]);
+  if (term->follow_cursor_shape) {
+    term->cursor.cursor_type_changed = true;
+    if (!term->ignore_blink_cursor) {
+      term->cursor.cursor_blink_changed = true;
+    }
+  }
+  return term->follow_cursor_shape ? Qt : Qnil;
 }
 
 int emacs_module_init(struct emacs_runtime *ert) {
@@ -1759,6 +1787,14 @@ int emacs_module_init(struct emacs_runtime *ert) {
   fun = env->make_function(env, 1, 1, Fvterm_reset_cursor_point,
                            "Reset cursor position.", NULL);
   bind_function(env, "vterm--reset-point", fun);
+
+  fun = env->make_function(env, 2, 2, Fvterm_set_follow_cursor,
+                           "Enable or disable cursor tracking.", NULL);
+  bind_function(env, "vterm--set-follow-cursor", fun);
+
+  fun = env->make_function(env, 2, 2, Fvterm_set_follow_cursor_shape,
+                           "Enable or disable cursor shape tracking.", NULL);
+  bind_function(env, "vterm--set-follow-cursor-shape", fun);
 
   fun = env->make_function(env, 1, 1, Fvterm_get_icrnl,
                            "Get the icrnl state of the pty", NULL);
