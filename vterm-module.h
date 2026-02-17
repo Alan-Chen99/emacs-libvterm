@@ -125,8 +125,6 @@ typedef struct Term {
   bool ignore_blink_cursor;
   int mouse_mode; /* VTERM_PROP_MOUSE_NONE, _CLICK, _DRAG, or _MOVE */
   bool altscreen;
-  bool follow_cursor;
-  bool follow_cursor_shape;
 
   char *cmd_buffer;
 
@@ -136,6 +134,8 @@ typedef struct Term {
      next one. */
   char *input_carry;
   size_t input_carry_len;
+
+  int emacs_major; /* cached emacs-major-version, set once at init */
 } Term;
 
 static bool compare_cells(VTermScreenCell *a, VTermScreenCell *b);
@@ -187,10 +187,8 @@ emacs_value Fvterm_get_prompt_point(emacs_env *env, ptrdiff_t nargs,
                                     emacs_value args[], void *data);
 emacs_value Fvterm_reset_cursor_point(emacs_env *env, ptrdiff_t nargs,
                                       emacs_value args[], void *data);
-emacs_value Fvterm_set_follow_cursor(emacs_env *env, ptrdiff_t nargs,
+emacs_value Fvterm_invalidate_cursor(emacs_env *env, ptrdiff_t nargs,
                                      emacs_value args[], void *data);
-emacs_value Fvterm_set_follow_cursor_shape(emacs_env *env, ptrdiff_t nargs,
-                                           emacs_value args[], void *data);
 
 VTERM_EXPORT int emacs_module_init(struct emacs_runtime *ert);
 

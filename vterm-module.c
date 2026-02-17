@@ -308,10 +308,10 @@ static void goto_col(Term *term, emacs_env *env, int row, int end_col) {
     insert(env, space);
 }
 
-static void refresh_lines(Term *term, emacs_env *env, int start_row,
-                          int end_row, int end_col) {
+static emacs_value refresh_lines(Term *term, emacs_env *env, int start_row,
+                                 int end_row, int end_col) {
   if (end_row < start_row) {
-    return;
+    return env->make_string(env, "", 0);
   }
   int i, j;
 
@@ -332,6 +332,12 @@ static void refresh_lines(Term *term, emacs_env *env, int start_row,
   VTermScreenCell lastCell;
   fetch_cell(term, start_row, 0, &lastCell);
 
+  /* Upper bound on fragments: each row can produce at most ~2*end_col
+     fragments (one per style transition + newline/prompt boundaries). */
+  int frag_cap = (end_row - start_row + 1) * (end_col + 2) * 2 + 4;
+  emacs_value *fragments = malloc(frag_cap * sizeof(emacs_value));
+  int nfrags = 0;
+
   for (i = start_row; i < end_row; i++) {
 
     int newline = 0;
@@ -340,19 +346,19 @@ static void refresh_lines(Term *term, emacs_env *env, int start_row,
       fetch_cell(term, i, j, &cell);
       if (isprompt && length > 0) {
         emacs_value text = render_text(env, term, buffer, length, &lastCell);
-        insert(env, render_prompt(env, text));
+        fragments[nfrags++] = render_prompt(env, text);
         length = 0;
       }
 
       isprompt = is_end_of_prompt(term, end_col, i, j);
       if (isprompt && length > 0) {
-        insert(env, render_text(env, term, buffer, length, &lastCell));
+        fragments[nfrags++] = render_text(env, term, buffer, length, &lastCell);
         length = 0;
       }
 
       if (!compare_cells(&cell, &lastCell)) {
         emacs_value text = render_text(env, term, buffer, length, &lastCell);
-        insert(env, text);
+        fragments[nfrags++] = text;
         length = 0;
       }
 
@@ -382,26 +388,27 @@ static void refresh_lines(Term *term, emacs_env *env, int start_row,
     }
     if (isprompt && length > 0) {
       emacs_value text = render_text(env, term, buffer, length, &lastCell);
-      insert(env, render_prompt(env, text));
+      fragments[nfrags++] = render_prompt(env, text);
       length = 0;
       isprompt = 0;
     }
 
     if (!newline) {
       emacs_value text = render_text(env, term, buffer, length, &lastCell);
-      insert(env, text);
+      fragments[nfrags++] = text;
       length = 0;
       text = render_fake_newline(env, term);
-      insert(env, text);
+      fragments[nfrags++] = text;
     }
   }
-  emacs_value text = render_text(env, term, buffer, length, &lastCell);
-  insert(env, text);
+  fragments[nfrags++] = render_text(env, term, buffer, length, &lastCell);
 
 #undef PUSH_BUFFER
   free(buffer);
 
-  return;
+  emacs_value result = concat_strings(env, fragments, nfrags);
+  free(fragments);
+  return result;
 }
 // Refresh the screen (visible part of the buffer when the terminal is
 // focused) of a invalidated terminal
@@ -411,13 +418,41 @@ static void refresh_screen(Term *term, emacs_env *env) {
 
   if (term->invalid_end >= term->invalid_start) {
     int startrow = -(term->height - term->invalid_start - term->linenum_added);
-    /* startrow is negative,so we backward  -startrow lines from end of buffer
-       then delete lines there.
-     */
-    goto_line(env, startrow);
-    delete_lines(env, startrow, term->invalid_end - term->invalid_start, true);
-    refresh_lines(term, env, term->invalid_start, term->invalid_end,
-                  term->width);
+    int count = term->invalid_end - term->invalid_start;
+
+    // Build replacement content as a propertized string
+    emacs_value new_content = refresh_lines(term, env,
+        term->invalid_start, term->invalid_end, term->width);
+
+    if (term->emacs_major >= 31) {
+      // Marker-preserving path: replace-region-contents diffs characters
+      // and applies minimal replace_range calls only on changed hunks,
+      // so markers in unchanged text are perfectly preserved.
+      goto_line(env, startrow);
+      emacs_value beg = point(env);
+      forward_line(env, count);
+      emacs_value end = point(env);
+
+      // Pass 1: Non-destructive text replacement (preserves markers)
+      // Give the diff algorithm a time budget (configurable via
+      // `vterm-replace-region-contents-timeout').  When the buffer
+      // contains multibyte characters (e.g. Unicode box-drawing from TUI
+      // apps), the diff's char→byte position conversion is O(n) per
+      // comparison, making it catastrophically slow (seconds for ~3KB).
+      // The time limit causes a graceful fallback to plain delete+insert.
+      emacs_value max_secs = symbol_value(env, Qvterm_replace_region_contents_timeout);
+      replace_region_contents(env, beg, end, new_content, max_secs);
+
+      // Pass 2: Force-apply properties on unchanged hunks which retain
+      // stale properties (replace-region-contents ignores properties
+      // during its character-level diff)
+      apply_string_properties(env, new_content, beg);
+    } else {
+      // Legacy path: delete + insert (destroys markers in refreshed region)
+      goto_line(env, startrow);
+      delete_lines(env, startrow, count, true);
+      insert(env, new_content);
+    }
 
     /* term->linenum_added is lines added  by window height increased */
     term->linenum += term->linenum_added;
@@ -509,7 +544,8 @@ static void refresh_scrollback(Term *term, emacs_env *env) {
      */
     int buf_index = -(term->height + del_cnt);
     goto_line(env, buf_index);
-    refresh_lines(term, env, -term->sb_pending, 0, term->width);
+    emacs_value sb_content = refresh_lines(term, env, -term->sb_pending, 0, term->width);
+    insert(env, sb_content);
 
     term->sb_pending = 0;
   }
@@ -599,7 +635,7 @@ static int term_movecursor(VTermPos new, VTermPos old, int visible,
 }
 
 static void term_redraw_cursor(Term *term, emacs_env *env) {
-  if (!term->follow_cursor_shape) {
+  if (!env->is_not_nil(env, symbol_value(env, Qvterm_follow_cursor_shape))) {
     return;
   }
 
@@ -641,7 +677,7 @@ static void term_redraw(Term *term, emacs_env *env) {
     refresh_scrollback(term, env);
     refresh_screen(term, env);
     term->linenum_added = term->linenum - oldlinenum;
-    if (term->follow_cursor) {
+    if (env->is_not_nil(env, symbol_value(env, Qvterm_follow_cursor))) {
       adjust_topline(term, env);
     }
     term->linenum_added = 0;
@@ -1332,8 +1368,8 @@ emacs_value Fvterm_new(emacs_env *env, ptrdiff_t nargs, emacs_value args[],
   term->disable_underline = disable_underline;
   term->disable_inverse_video = disable_inverse_video;
   term->ignore_blink_cursor = ignore_blink_cursor;
-  term->follow_cursor = true;
-  term->follow_cursor_shape = false;
+  term->emacs_major = env->extract_integer(env,
+      symbol_value(env, Qemacs_major_version));
   emacs_value newline = env->make_string(env, "\n", 1);
   for (int i = 0; i < term->height; i++) {
     insert(env, newline);
@@ -1657,24 +1693,14 @@ emacs_value Fvterm_reset_cursor_point(emacs_env *env, ptrdiff_t nargs,
   return point(env);
 }
 
-emacs_value Fvterm_set_follow_cursor(emacs_env *env, ptrdiff_t nargs,
+emacs_value Fvterm_invalidate_cursor(emacs_env *env, ptrdiff_t nargs,
                                      emacs_value args[], void *data) {
   Term *term = env->get_user_ptr(env, args[0]);
-  term->follow_cursor = env->is_not_nil(env, args[1]);
-  return term->follow_cursor ? Qt : Qnil;
-}
-
-emacs_value Fvterm_set_follow_cursor_shape(emacs_env *env, ptrdiff_t nargs,
-                                           emacs_value args[], void *data) {
-  Term *term = env->get_user_ptr(env, args[0]);
-  term->follow_cursor_shape = env->is_not_nil(env, args[1]);
-  if (term->follow_cursor_shape) {
-    term->cursor.cursor_type_changed = true;
-    if (!term->ignore_blink_cursor) {
-      term->cursor.cursor_blink_changed = true;
-    }
+  term->cursor.cursor_type_changed = true;
+  if (!term->ignore_blink_cursor) {
+    term->cursor.cursor_blink_changed = true;
   }
-  return term->follow_cursor_shape ? Qt : Qnil;
+  return Qt;
 }
 
 int emacs_module_init(struct emacs_runtime *ert) {
@@ -1701,6 +1727,12 @@ int emacs_module_init(struct emacs_runtime *ert) {
   Qrear_nonsticky =
       env->make_global_ref(env, env->intern(env, "rear-nonsticky"));
   Qvterm_prompt = env->make_global_ref(env, env->intern(env, "vterm-prompt"));
+  Qvterm_replace_region_contents_timeout = env->make_global_ref(
+      env, env->intern(env, "vterm-replace-region-contents-timeout"));
+  Qvterm_follow_cursor =
+      env->make_global_ref(env, env->intern(env, "vterm-follow-cursor"));
+  Qvterm_follow_cursor_shape =
+      env->make_global_ref(env, env->intern(env, "vterm-follow-cursor-shape"));
 
   Qface = env->make_global_ref(env, env->intern(env, "font-lock-face"));
   Qbox = env->make_global_ref(env, env->intern(env, "box"));
@@ -1755,6 +1787,11 @@ int emacs_module_init(struct emacs_runtime *ert) {
   Fvterm_eval = env->make_global_ref(env, env->intern(env, "vterm--eval"));
   Fvterm_set_selection =
       env->make_global_ref(env, env->intern(env, "vterm--set-selection"));
+  Fconcat = env->make_global_ref(env, env->intern(env, "concat"));
+  Freplace_region_contents =
+      env->make_global_ref(env, env->intern(env, "replace-region-contents"));
+  Fvterm_apply_properties =
+      env->make_global_ref(env, env->intern(env, "vterm--apply-string-properties"));
 
   // Exported functions
   emacs_value fun;
@@ -1788,13 +1825,9 @@ int emacs_module_init(struct emacs_runtime *ert) {
                            "Reset cursor position.", NULL);
   bind_function(env, "vterm--reset-point", fun);
 
-  fun = env->make_function(env, 2, 2, Fvterm_set_follow_cursor,
-                           "Enable or disable cursor tracking.", NULL);
-  bind_function(env, "vterm--set-follow-cursor", fun);
-
-  fun = env->make_function(env, 2, 2, Fvterm_set_follow_cursor_shape,
-                           "Enable or disable cursor shape tracking.", NULL);
-  bind_function(env, "vterm--set-follow-cursor-shape", fun);
+  fun = env->make_function(env, 1, 1, Fvterm_invalidate_cursor,
+                           "Mark cursor type/blink as needing refresh.", NULL);
+  bind_function(env, "vterm--invalidate-cursor", fun);
 
   fun = env->make_function(env, 1, 1, Fvterm_get_icrnl,
                            "Get the icrnl state of the pty", NULL);

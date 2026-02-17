@@ -26,6 +26,9 @@ emacs_value Qemacs_major_version;
 emacs_value Qvterm_line_wrap;
 emacs_value Qrear_nonsticky;
 emacs_value Qvterm_prompt;
+emacs_value Qvterm_replace_region_contents_timeout;
+emacs_value Qvterm_follow_cursor;
+emacs_value Qvterm_follow_cursor_shape;
 
 // Emacs functions
 emacs_value Fblink_cursor_mode;
@@ -59,6 +62,9 @@ emacs_value Feq;
 emacs_value Fvterm_get_color;
 emacs_value Fvterm_eval;
 emacs_value Fvterm_set_selection;
+emacs_value Fconcat;
+emacs_value Freplace_region_contents;
+emacs_value Fvterm_apply_properties;
 
 /* Set the function cell of the symbol named NAME to SFUN using
    the 'fset' function.  */
@@ -276,4 +282,21 @@ emacs_value vterm_set_selection(emacs_env *env, emacs_value selection_target,
                                 emacs_value selection_data) {
   return env->funcall(env, Fvterm_set_selection, 2,
                       (emacs_value[]){selection_target, selection_data});
+}
+
+emacs_value concat_strings(emacs_env *env, emacs_value fragments[], int count) {
+  emacs_value frag_list = list(env, fragments, count);
+  return env->funcall(env, Fapply, 2, (emacs_value[]){Fconcat, frag_list});
+}
+
+void replace_region_contents(emacs_env *env, emacs_value beg, emacs_value end,
+                             emacs_value source, emacs_value max_secs) {
+  env->funcall(env, Freplace_region_contents, 4,
+               (emacs_value[]){beg, end, source, max_secs});
+}
+
+void apply_string_properties(emacs_env *env, emacs_value source,
+                             emacs_value buffer_start) {
+  env->funcall(env, Fvterm_apply_properties, 2,
+               (emacs_value[]){source, buffer_start});
 }
