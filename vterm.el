@@ -1732,6 +1732,22 @@ adjustments, or nil when dimensions are non-positive."
                      (string-width (number-to-string max-line-num)))))
     width))
 
+(defun vterm--apply-string-properties (source-string buffer-start)
+  "Copy all text properties from SOURCE-STRING to buffer at BUFFER-START.
+This is used after `replace-region-contents' to fix stale properties
+on unchanged text hunks (replace-region-contents ignores properties
+during its character-level diff)."
+  (let ((inhibit-read-only t)
+        (pos 0)
+        (len (length source-string)))
+    (while (< pos len)
+      (let* ((next (or (next-property-change pos source-string) len))
+             (props (text-properties-at pos source-string)))
+        (set-text-properties (+ buffer-start pos)
+                             (+ buffer-start next)
+                             props)
+        (setq pos next)))))
+
 (defun vterm--delete-lines (line-num count &optional delete-whole-line)
   "Delete COUNT lines from LINE-NUM.
 If LINE-NUM is negative backward-line from end of buffer.

@@ -293,10 +293,10 @@ static void goto_col(Term *term, emacs_env *env, int row, int end_col) {
     insert(env, space);
 }
 
-static void refresh_lines(Term *term, emacs_env *env, int start_row,
-                          int end_row, int end_col) {
+static emacs_value refresh_lines(Term *term, emacs_env *env, int start_row,
+                                 int end_row, int end_col) {
   if (end_row < start_row) {
-    return;
+    return env->make_string(env, "", 0);
   }
   int i, j;
 
@@ -317,6 +317,9 @@ static void refresh_lines(Term *term, emacs_env *env, int start_row,
   VTermScreenCell lastCell;
   fetch_cell(term, start_row, 0, &lastCell);
 
+  emacs_value fragments[4096];
+  int nfrags = 0;
+
   for (i = start_row; i < end_row; i++) {
 
     int newline = 0;
@@ -325,19 +328,19 @@ static void refresh_lines(Term *term, emacs_env *env, int start_row,
       fetch_cell(term, i, j, &cell);
       if (isprompt && length > 0) {
         emacs_value text = render_text(env, term, buffer, length, &lastCell);
-        insert(env, render_prompt(env, text));
+        fragments[nfrags++] = render_prompt(env, text);
         length = 0;
       }
 
       isprompt = is_end_of_prompt(term, end_col, i, j);
       if (isprompt && length > 0) {
-        insert(env, render_text(env, term, buffer, length, &lastCell));
+        fragments[nfrags++] = render_text(env, term, buffer, length, &lastCell);
         length = 0;
       }
 
       if (!compare_cells(&cell, &lastCell)) {
         emacs_value text = render_text(env, term, buffer, length, &lastCell);
-        insert(env, text);
+        fragments[nfrags++] = text;
         length = 0;
       }
 
@@ -367,26 +370,25 @@ static void refresh_lines(Term *term, emacs_env *env, int start_row,
     }
     if (isprompt && length > 0) {
       emacs_value text = render_text(env, term, buffer, length, &lastCell);
-      insert(env, render_prompt(env, text));
+      fragments[nfrags++] = render_prompt(env, text);
       length = 0;
       isprompt = 0;
     }
 
     if (!newline) {
       emacs_value text = render_text(env, term, buffer, length, &lastCell);
-      insert(env, text);
+      fragments[nfrags++] = text;
       length = 0;
       text = render_fake_newline(env, term);
-      insert(env, text);
+      fragments[nfrags++] = text;
     }
   }
-  emacs_value text = render_text(env, term, buffer, length, &lastCell);
-  insert(env, text);
+  fragments[nfrags++] = render_text(env, term, buffer, length, &lastCell);
 
 #undef PUSH_BUFFER
   free(buffer);
 
-  return;
+  return concat_strings(env, fragments, nfrags);
 }
 // Refresh the screen (visible part of the buffer when the terminal is
 // focused) of a invalidated terminal
@@ -396,13 +398,36 @@ static void refresh_screen(Term *term, emacs_env *env) {
 
   if (term->invalid_end >= term->invalid_start) {
     int startrow = -(term->height - term->invalid_start - term->linenum_added);
-    /* startrow is negative,so we backward  -startrow lines from end of buffer
-       then delete lines there.
-     */
-    goto_line(env, startrow);
-    delete_lines(env, startrow, term->invalid_end - term->invalid_start, true);
-    refresh_lines(term, env, term->invalid_start, term->invalid_end,
-                  term->width);
+    int count = term->invalid_end - term->invalid_start;
+    int emacs_major = env->extract_integer(env,
+        symbol_value(env, Qemacs_major_version));
+
+    // Build replacement content as a propertized string
+    emacs_value new_content = refresh_lines(term, env,
+        term->invalid_start, term->invalid_end, term->width);
+
+    if (emacs_major >= 31) {
+      // Marker-preserving path: replace-region-contents diffs characters
+      // and applies minimal replace_range calls only on changed hunks,
+      // so markers in unchanged text are perfectly preserved.
+      goto_line(env, startrow);
+      emacs_value beg = point(env);
+      forward_line(env, count);
+      emacs_value end = point(env);
+
+      // Pass 1: Non-destructive text replacement (preserves markers)
+      replace_region_contents(env, beg, end, new_content);
+
+      // Pass 2: Force-apply properties on unchanged hunks which retain
+      // stale properties (replace-region-contents ignores properties
+      // during its character-level diff)
+      apply_string_properties(env, new_content, beg);
+    } else {
+      // Legacy path: delete + insert (destroys markers in refreshed region)
+      goto_line(env, startrow);
+      delete_lines(env, startrow, count, true);
+      insert(env, new_content);
+    }
 
     /* term->linenum_added is lines added  by window height increased */
     term->linenum += term->linenum_added;
@@ -494,7 +519,8 @@ static void refresh_scrollback(Term *term, emacs_env *env) {
      */
     int buf_index = -(term->height + del_cnt);
     goto_line(env, buf_index);
-    refresh_lines(term, env, -term->sb_pending, 0, term->width);
+    emacs_value sb_content = refresh_lines(term, env, -term->sb_pending, 0, term->width);
+    insert(env, sb_content);
 
     term->sb_pending = 0;
   }
@@ -1547,6 +1573,11 @@ int emacs_module_init(struct emacs_runtime *ert) {
   Fvterm_eval = env->make_global_ref(env, env->intern(env, "vterm--eval"));
   Fvterm_set_selection =
       env->make_global_ref(env, env->intern(env, "vterm--set-selection"));
+  Fconcat = env->make_global_ref(env, env->intern(env, "concat"));
+  Freplace_region_contents =
+      env->make_global_ref(env, env->intern(env, "replace-region-contents"));
+  Fvterm_apply_properties =
+      env->make_global_ref(env, env->intern(env, "vterm--apply-string-properties"));
 
   // Exported functions
   emacs_value fun;
