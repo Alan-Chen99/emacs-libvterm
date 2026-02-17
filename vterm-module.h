@@ -118,10 +118,14 @@ typedef struct Term {
   bool disable_underline;
   bool disable_inverse_video;
   bool ignore_blink_cursor;
+  bool follow_cursor;
+  bool follow_cursor_shape;
 
   char *cmd_buffer;
 
   int pty_fd;
+
+  int mouse_mode; /* VTERM_PROP_MOUSE_NONE, _CLICK, _DRAG, or _MOVE */
 } Term;
 
 static bool compare_cells(VTermScreenCell *a, VTermScreenCell *b);
@@ -157,6 +161,8 @@ emacs_value Fvterm_set_pty_name(emacs_env *env, ptrdiff_t nargs,
                                 emacs_value args[], void *data);
 emacs_value Fvterm_get_icrnl(emacs_env *env, ptrdiff_t nargs,
                              emacs_value args[], void *data);
+emacs_value Fvterm_get_mouse_mode(emacs_env *env, ptrdiff_t nargs,
+                                  emacs_value args[], void *data);
 
 emacs_value Fvterm_get_pwd(emacs_env *env, ptrdiff_t nargs, emacs_value args[],
                            void *data);
@@ -165,6 +171,10 @@ emacs_value Fvterm_get_prompt_point(emacs_env *env, ptrdiff_t nargs,
                                     emacs_value args[], void *data);
 emacs_value Fvterm_reset_cursor_point(emacs_env *env, ptrdiff_t nargs,
                                       emacs_value args[], void *data);
+emacs_value Fvterm_set_follow_cursor(emacs_env *env, ptrdiff_t nargs,
+                                     emacs_value args[], void *data);
+emacs_value Fvterm_set_follow_cursor_shape(emacs_env *env, ptrdiff_t nargs,
+                                           emacs_value args[], void *data);
 
 VTERM_EXPORT int emacs_module_init(struct emacs_runtime *ert);
 
