@@ -399,37 +399,12 @@ static void refresh_screen(Term *term, emacs_env *env) {
   if (term->invalid_end >= term->invalid_start) {
     int startrow = -(term->height - term->invalid_start - term->linenum_added);
     int count = term->invalid_end - term->invalid_start;
-    int emacs_major = env->extract_integer(env,
-        symbol_value(env, Qemacs_major_version));
 
-    // Build replacement content as a propertized string
     emacs_value new_content = refresh_lines(term, env,
         term->invalid_start, term->invalid_end, term->width);
 
-    if (emacs_major >= 31) {
-      // Marker-preserving path: replace-region-contents diffs characters
-      // and applies minimal replace_range calls only on changed hunks,
-      // so markers in unchanged text are perfectly preserved.
-      goto_line(env, startrow);
-      emacs_value beg = point(env);
-      forward_line(env, count);
-      emacs_value end = point(env);
+    vterm_replace_region(env, startrow, count, new_content);
 
-      // Pass 1: Non-destructive text replacement (preserves markers)
-      replace_region_contents(env, beg, end, new_content);
-
-      // Pass 2: Force-apply properties on unchanged hunks which retain
-      // stale properties (replace-region-contents ignores properties
-      // during its character-level diff)
-      apply_string_properties(env, new_content, beg);
-    } else {
-      // Legacy path: delete + insert (destroys markers in refreshed region)
-      goto_line(env, startrow);
-      delete_lines(env, startrow, count, true);
-      insert(env, new_content);
-    }
-
-    /* term->linenum_added is lines added  by window height increased */
     term->linenum += term->linenum_added;
     term->linenum_added = 0;
   }
@@ -1574,10 +1549,8 @@ int emacs_module_init(struct emacs_runtime *ert) {
   Fvterm_set_selection =
       env->make_global_ref(env, env->intern(env, "vterm--set-selection"));
   Fconcat = env->make_global_ref(env, env->intern(env, "concat"));
-  Freplace_region_contents =
-      env->make_global_ref(env, env->intern(env, "replace-region-contents"));
-  Fvterm_apply_properties =
-      env->make_global_ref(env, env->intern(env, "vterm--apply-string-properties"));
+  Fvterm_replace_region =
+      env->make_global_ref(env, env->intern(env, "vterm--replace-region"));
 
   // Exported functions
   emacs_value fun;

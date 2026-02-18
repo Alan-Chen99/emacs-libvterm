@@ -61,8 +61,7 @@ extern emacs_value Fvterm_get_color;
 extern emacs_value Fvterm_eval;
 extern emacs_value Fvterm_set_selection;
 extern emacs_value Fconcat;
-extern emacs_value Freplace_region_contents;
-extern emacs_value Fvterm_apply_properties;
+extern emacs_value Fvterm_replace_region;
 
 // Utils
 void bind_function(emacs_env *env, const char *name, emacs_value Sfun);
@@ -100,9 +99,7 @@ emacs_value vterm_eval(emacs_env *env, emacs_value string);
 emacs_value vterm_set_selection(emacs_env *env, emacs_value selection_target,
                                 emacs_value selection_data);
 emacs_value concat_strings(emacs_env *env, emacs_value fragments[], int count);
-void replace_region_contents(emacs_env *env, emacs_value beg, emacs_value end,
-                             emacs_value source);
-void apply_string_properties(emacs_env *env, emacs_value source,
-                             emacs_value buffer_start);
+void vterm_replace_region(emacs_env *env, int startrow, int count,
+                          emacs_value new_content);
 
 #endif /* ELISP_H */

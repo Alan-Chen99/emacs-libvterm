@@ -1748,6 +1748,45 @@ during its character-level diff)."
                              props)
         (setq pos next)))))
 
+(defun vterm--replace-region (startrow count new-content)
+  "Replace COUNT lines from STARTROW with NEW-CONTENT, preserving markers.
+Uses the best available API for the running Emacs version:
+- Emacs 31+: `replace-region-contents' (C subroutine, accepts string)
+- Emacs 26-30: `replace-buffer-contents' (narrow + temp buffer)
+- Emacs <26: delete + insert (destroys markers)"
+  (let ((inhibit-read-only t))
+    (cond
+     ;; Emacs 31+: replace-region-contents is a C subroutine accepting string
+     ((and (fboundp 'replace-region-contents)
+           (subrp (symbol-function 'replace-region-contents)))
+      (save-excursion
+        (vterm--goto-line startrow)
+        (let ((beg (point)))
+          (forward-line count)
+          (replace-region-contents beg (point) new-content)
+          (vterm--apply-string-properties new-content beg))))
+     ;; Emacs 26-30: replace-buffer-contents (not yet obsolete here)
+     ((fboundp 'replace-buffer-contents)
+      (save-excursion
+        (vterm--goto-line startrow)
+        (let ((beg (point)))
+          (forward-line count)
+          (save-restriction
+            (narrow-to-region beg (point))
+            (let ((source (generate-new-buffer " *vterm-rbc*")))
+              (unwind-protect
+                  (progn
+                    (with-current-buffer source (insert new-content))
+                    (replace-buffer-contents source))
+                (kill-buffer source))))
+          (vterm--apply-string-properties new-content beg))))
+     ;; Emacs <26: legacy (destroys markers)
+     (t
+      (save-excursion
+        (vterm--goto-line startrow)
+        (vterm--delete-lines startrow count t)
+        (vterm--insert new-content))))))
+
 (defun vterm--delete-lines (line-num count &optional delete-whole-line)
   "Delete COUNT lines from LINE-NUM.
 If LINE-NUM is negative backward-line from end of buffer.
