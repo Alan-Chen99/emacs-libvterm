@@ -158,6 +158,7 @@ the executable."
 (declare-function vterm--invalidate-cursor "vterm-module")
 (declare-function vterm--get-icrnl "vterm-module")
 (declare-function vterm--get-mouse-mode "vterm-module")
+(declare-function vterm--full-resync "vterm-module")
 
 (require 'subr-x)
 (require 'find-func)
@@ -1911,6 +1912,18 @@ Effectively toggle between the two positions."
   "Move point to the end of the line, bypassing line wraps."
   (interactive "^")
   (goto-char (vterm--get-end-of-line)))
+
+(defun vterm-resync-buffer ()
+  "Force full buffer resync from terminal state.
+Rebuilds the entire buffer content (scrollback + screen) from
+libvterm's authoritative state via `replace-region-contents',
+preserving point and markers in unchanged regions.  Use this to
+recover from buffer corruption (e.g. an externally deleted character
+or newline that desynchronized the buffer from the terminal)."
+  (interactive)
+  (when vterm--term
+    (let ((inhibit-read-only t))
+      (vterm--full-resync vterm--term))))
 
 (defun vterm-reset-cursor-point ()
   "Make sure the cursor at the right position."

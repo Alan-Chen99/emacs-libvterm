@@ -173,6 +173,8 @@ emacs_value Fvterm_reset_cursor_point(emacs_env *env, ptrdiff_t nargs,
                                       emacs_value args[], void *data);
 emacs_value Fvterm_invalidate_cursor(emacs_env *env, ptrdiff_t nargs,
                                      emacs_value args[], void *data);
+emacs_value Fvterm_full_resync(emacs_env *env, ptrdiff_t nargs,
+                               emacs_value args[], void *data);
 
 VTERM_EXPORT int emacs_module_init(struct emacs_runtime *ert);
 
