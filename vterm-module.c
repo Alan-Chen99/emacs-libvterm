@@ -1594,6 +1594,39 @@ emacs_value Fvterm_set_size(emacs_env *env, ptrdiff_t nargs, emacs_value args[],
   return Qnil;
 }
 
+emacs_value Fvterm_full_resync(emacs_env *env, ptrdiff_t nargs,
+                               emacs_value args[], void *data) {
+  Term *term = (Term *)env->get_user_ptr(env, args[0]);
+
+  vterm_screen_flush_damage(term->vts);
+
+  /* Generate full expected content (scrollback + screen in one call) */
+  emacs_value full = refresh_lines(term, env,
+      -(int)term->sb_current, term->height, term->width);
+
+  /* Diff-replace entire buffer — preserves point and markers in unchanged regions */
+  emacs_value beg = env->funcall(env, env->intern(env, "point-min"), 0, NULL);
+  emacs_value end = env->funcall(env, env->intern(env, "point-max"), 0, NULL);
+
+  emacs_value max_secs = symbol_value(env, Qvterm_replace_region_contents_timeout);
+  replace_region_contents(env, beg, end, full, max_secs);
+
+  apply_string_properties(env, full, beg);
+
+  /* Reset C state to match buffer reality */
+  term->linenum = (int)term->sb_current + term->height;
+  term->linenum_added = 0;
+  term->height_resize = 0;
+  term->sb_pending = 0;
+  term->sb_pending_by_height_decr = 0;
+  term->sb_clear_pending = false;
+  term->invalid_start = INT_MAX;
+  term->invalid_end = -1;
+  term->is_invalidated = false;
+
+  return env->intern(env, "nil");
+}
+
 emacs_value Fvterm_set_pty_name(emacs_env *env, ptrdiff_t nargs,
                                 emacs_value args[], void *data) {
   Term *term = env->get_user_ptr(env, args[0]);
@@ -1855,6 +1888,10 @@ int emacs_module_init(struct emacs_runtime *ert) {
       "application asked for mouse reporting.",
       NULL);
   bind_function(env, "vterm--mouse-button", fun);
+
+  fun = env->make_function(env, 1, 1, Fvterm_full_resync,
+                           "Resync buffer from terminal state.", NULL);
+  bind_function(env, "vterm--full-resync", fun);
 
   provide(env, "vterm-module");
 
