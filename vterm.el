@@ -2110,21 +2110,23 @@ Argument FOLLOW controls whether window resizes update terminal dimensions."
                "automatic"
              "manual (use vterm-sync-window-size)")))
 
-(defun vterm-sync-window-size ()
+(defun vterm-sync-window-size (width)
   "Sync terminal size to current window dimensions.
-Useful after window resize when `vterm-follow-window-size' is nil,
-since automatic resizing is suppressed in that mode."
-  (interactive)
+With prefix arg WIDTH, set terminal width to that many columns
+instead of deriving it from the window.  Useful after window
+resize when `vterm-follow-window-size' is nil, since automatic
+resizing is suppressed in that mode."
+  (interactive "P")
   (when (and vterm--term vterm--process (process-live-p vterm--process))
     (when-let* ((windows (get-buffer-window-list nil nil t))
                 (dims (vterm--calculate-size vterm--process windows))
-                (width (car dims))
+                (w (if width (prefix-numeric-value width) (car dims)))
                 (height (cdr dims)))
       (let ((inhibit-read-only t))
-        (vterm--set-size vterm--term height width)
-        (set-process-window-size vterm--process height width)
+        (vterm--set-size vterm--term height w)
+        (set-process-window-size vterm--process height w)
         (vterm--reset-point vterm--term)
-        (message "vterm size synced: %dx%d" width height)))))
+        (message "vterm size synced: %dx%d" w height)))))
 
 (defun vterm-mouse-reporting-p ()
   "Return non-nil if the application has enabled mouse reporting.
