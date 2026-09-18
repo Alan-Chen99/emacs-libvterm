@@ -1599,16 +1599,15 @@ value of `vterm-buffer-name'."
   "I/O Event.  Feeds PROCESS's INPUT to the virtual terminal.
 
 Then triggers a redraw from the module.
-INPUT is a unibyte string (raw pty output, :coding is no-conversion).
-We base64-encode it so all bytes pass safely through Emacs's
-multibyte string layer to the C module, which decodes it back."
+INPUT reaches the module verbatim: the module API hands C the bytes of a
+unibyte string unchanged, and UTF-8-encodes a multibyte one, which inverts
+the decoding that produced it.  Either way libvterm sees the pty's bytes."
   (let ((inhibit-redisplay t)
         (inhibit-read-only t)
         (buf (process-buffer process)))
     (when (buffer-live-p buf)
       (with-current-buffer buf
-        (vterm--write-input vterm--term
-                            (base64-encode-string input t))
+        (vterm--write-input vterm--term input)
         (vterm--update vterm--term)))))
 
 (defun vterm--sentinel (process event)

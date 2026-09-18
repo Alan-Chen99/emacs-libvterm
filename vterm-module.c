@@ -1391,57 +1391,6 @@ emacs_value Fvterm_redraw(emacs_env *env, ptrdiff_t nargs, emacs_value args[],
   return env->make_integer(env, 0);
 }
 
-/* RFC 2045 base64 decode table. Input is always well-formed output from
- * Emacs base64-encode-string; unmapped byte values default to 0 (same as
- * 'A'), which is acceptable because the input is trusted. */
-static const unsigned char b64_decode_table[256] = {
-    ['A'] = 0,  ['B'] = 1,  ['C'] = 2,  ['D'] = 3,  ['E'] = 4,  ['F'] = 5,
-    ['G'] = 6,  ['H'] = 7,  ['I'] = 8,  ['J'] = 9,  ['K'] = 10, ['L'] = 11,
-    ['M'] = 12, ['N'] = 13, ['O'] = 14, ['P'] = 15, ['Q'] = 16, ['R'] = 17,
-    ['S'] = 18, ['T'] = 19, ['U'] = 20, ['V'] = 21, ['W'] = 22, ['X'] = 23,
-    ['Y'] = 24, ['Z'] = 25, ['a'] = 26, ['b'] = 27, ['c'] = 28, ['d'] = 29,
-    ['e'] = 30, ['f'] = 31, ['g'] = 32, ['h'] = 33, ['i'] = 34, ['j'] = 35,
-    ['k'] = 36, ['l'] = 37, ['m'] = 38, ['n'] = 39, ['o'] = 40, ['p'] = 41,
-    ['q'] = 42, ['r'] = 43, ['s'] = 44, ['t'] = 45, ['u'] = 46, ['v'] = 47,
-    ['w'] = 48, ['x'] = 49, ['y'] = 50, ['z'] = 51, ['0'] = 52, ['1'] = 53,
-    ['2'] = 54, ['3'] = 55, ['4'] = 56, ['5'] = 57, ['6'] = 58, ['7'] = 59,
-    ['8'] = 60, ['9'] = 61, ['+'] = 62, ['/'] = 63,
-};
-
-/* Decode base64 in-place. Returns decoded length. */
-static ptrdiff_t base64_decode(char *buf, ptrdiff_t len) {
-  unsigned char *src = (unsigned char *)buf;
-  unsigned char *dst = (unsigned char *)buf;
-  unsigned char *end = src + len;
-
-  while (src < end) {
-    /* Skip padding and any whitespace */
-    if (*src == '=' || *src == '\n' || *src == '\r' || *src == ' ') {
-      src++;
-      continue;
-    }
-
-    unsigned int a = b64_decode_table[src[0]];
-    unsigned int b = (src + 1 < end) ? b64_decode_table[src[1]] : 0;
-    unsigned int c = (src + 2 < end) ? b64_decode_table[src[2]] : 0;
-    unsigned int d = (src + 3 < end) ? b64_decode_table[src[3]] : 0;
-    unsigned int triple = (a << 18) | (b << 12) | (c << 6) | d;
-
-    *dst++ = (triple >> 16) & 0xFF;
-    if (src + 2 < end && src[2] != '=')
-      *dst++ = (triple >> 8) & 0xFF;
-    if (src + 3 < end && src[3] != '=')
-      *dst++ = triple & 0xFF;
-
-    src += 4;
-  }
-
-  return dst - (unsigned char *)buf;
-}
-
-/* vterm--filter base64-encodes raw pty output before sending it here so that
- * Emacs's multibyte string layer cannot corrupt binary bytes. We decode back
- * to raw bytes before passing to libvterm. */
 emacs_value Fvterm_write_input(emacs_env *env, ptrdiff_t nargs,
                                emacs_value args[], void *data) {
   Term *term = env->get_user_ptr(env, args[0]);
@@ -1450,11 +1399,11 @@ emacs_value Fvterm_write_input(emacs_env *env, ptrdiff_t nargs,
   if (len > 0) {
     char bytes[len];
     env->copy_string_contents(env, args[1], bytes, &len);
-    /* len from copy_string_contents includes the null terminator */
+    /* copy_string_contents counts the terminating NUL, which is not
+       terminal input. */
     len--;
 
-    ptrdiff_t decoded_len = base64_decode(bytes, len);
-    vterm_input_write(term->vt, bytes, decoded_len);
+    vterm_input_write(term->vt, bytes, len);
     vterm_screen_flush_damage(term->vts);
   }
 
