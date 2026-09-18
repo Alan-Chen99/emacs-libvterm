@@ -869,7 +869,17 @@ Exceptions are defined by `vterm-keymap-exceptions'."
            ;; vterm--sentinel will kill the buffer
            :sentinel (when (or vterm-exit-functions
                                vterm-kill-buffer-on-exit)
-                       #'vterm--sentinel))))
+                       #'vterm--sentinel)))
+    ;; `:coding' above is advisory: with `:file-handler', a handler may build
+    ;; the process itself.  Tramp does for a method without `tramp-direct-async'
+    ;; or across a multi-hop, handing back a connection process it has already
+    ;; set to utf-8.  A decoded string cannot carry a terminal stream: any byte
+    ;; that is not valid UTF-8 -- output of a binary, a filename in another
+    ;; encoding -- decodes to a raw-byte character, which the module API refuses
+    ;; outright with `wrong-type-argument', dropping that chunk; and a dos
+    ;; eol-type swallows the CR of every CRLF the pty emits.  (An incomplete
+    ;; sequence at a chunk boundary is safe: Emacs carries those bytes over.)
+    (set-process-coding-system vterm--process 'no-conversion 'no-conversion))
 
   ;; Change major-mode is not allowed
   ;; Vterm interfaces with an underlying process. Changing the major
@@ -1599,9 +1609,11 @@ value of `vterm-buffer-name'."
   "I/O Event.  Feeds PROCESS's INPUT to the virtual terminal.
 
 Then triggers a redraw from the module.
-INPUT reaches the module verbatim: the module API hands C the bytes of a
-unibyte string unchanged, and UTF-8-encodes a multibyte one, which inverts
-the decoding that produced it.  Either way libvterm sees the pty's bytes."
+INPUT is unibyte -- `vterm--internal' pins the process to no-conversion --
+and reaches libvterm verbatim, since the module API copies a unibyte
+string's bytes to C unchanged.  Nothing may re-encode INPUT on the way:
+`base64-encode-string' signals on a multibyte string holding non-ASCII, and
+a process filter that signals loses that chunk of terminal output."
   (let ((inhibit-redisplay t)
         (inhibit-read-only t)
         (buf (process-buffer process)))
