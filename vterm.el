@@ -1609,7 +1609,7 @@ value of `vterm-buffer-name'."
   "I/O Event.  Feeds PROCESS's INPUT to the virtual terminal.
 
 Then triggers a redraw from the module.
-INPUT is unibyte -- `vterm--internal' pins the process to no-conversion --
+INPUT is unibyte -- `vterm-mode' pins the process to no-conversion --
 and reaches libvterm verbatim, since the module API copies a unibyte
 string's bytes to C unchanged.  Nothing may re-encode INPUT on the way:
 `base64-encode-string' signals on a multibyte string holding non-ASCII, and
