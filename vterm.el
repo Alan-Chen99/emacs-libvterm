@@ -169,6 +169,7 @@ the executable."
 (require 'face-remap)
 (require 'tramp)
 (require 'bookmark)
+(require 'mailcap)
 
 ;;; Options
 
@@ -888,6 +889,8 @@ Exceptions are defined by `vterm-keymap-exceptions'."
             (lambda () (interactive)
               (user-error "You cannot change major mode in vterm buffers")) nil t)
 
+  (yank-media-handler "image/.*" #'vterm--image-yank-media-handler)
+
   (vterm--set-pty-name vterm--term (process-tty-name vterm--process))
   (process-put vterm--process 'adjust-window-size-function
                #'vterm--window-adjust-process-window-size)
@@ -1293,6 +1296,20 @@ Argument ARG is passed to `yank'."
         (primary (gui-get-primary-selection)))
     (cl-letf (((symbol-function 'insert-for-yank) #'vterm-insert))
       (insert-for-yank primary))))
+
+;; A pty carries no image bytes; programs that take images (coding agents and
+;; the like) accept a pasted file path instead.  `make-nearby-temp-file' puts
+;; the file on the host the shell runs on, so a Tramp vterm gets a path valid
+;; there.
+(defun vterm--image-yank-media-handler (mimetype data)
+  "Save image DATA of MIMETYPE to a temporary file and paste its path."
+  (let* ((ext (or (mailcap-mime-type-to-extension mimetype)
+                  (error "No file extension known for %s" mimetype)))
+         (file (make-nearby-temp-file "vterm-image-" nil (format ".%s" ext))))
+    (let ((coding-system-for-write 'no-conversion))
+      (write-region data nil file nil 'silent))
+    (vterm-goto-char (point))
+    (vterm-insert (file-local-name file))))
 
 (defun vterm-yank-pop (&optional arg)
   "Replaced text just yanked with the next entry in the kill ring.
