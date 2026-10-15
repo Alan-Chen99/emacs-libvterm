@@ -1376,8 +1376,20 @@ Provide similar behavior as `insert' for vterm."
       (if (vterm-goto-char start)
           (cl-loop repeat count do
                    (vterm-send-key "<delete>" nil nil nil t))
-        (let ((inhibit-read-only nil))
-          (vterm--delete-region start end))))))
+        ;; The application stops the cursor at the start of its input
+        ;; (shell prompt, TUI input box).  That spot is often unknown to
+        ;; prompt tracking -- tmux drops the OSC 51 marks, TUIs never send
+        ;; them -- so START can lie inside the prompt.  The part of the
+        ;; region the cursor did reach is still the application's input.
+        (let ((cursor (vterm--get-cursor-point)))
+          (cond
+           ((and (< start cursor) (< cursor end))
+            (cl-loop repeat (length (filter-buffer-substring cursor end)) do
+                     (vterm-send-key "<delete>" nil nil nil t)))
+           (buffer-read-only
+            (user-error "Text outside the terminal's input area is read-only"))
+           (t
+            (vterm--delete-region start end))))))))
 
 (defun vterm-goto-char (pos)
   "Set point to POSITION for vterm.
