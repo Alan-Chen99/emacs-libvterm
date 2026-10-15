@@ -859,7 +859,9 @@ Exceptions are defined by `vterm-keymap-exceptions'."
                ;;
                ;; See: https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=220009
                (if (eq system-type 'berkeley-unix) "" "iutf8")
-               (window-body-height)
+               ;; Must equal libvterm's row count, or a full-screen app
+               ;; draws its last row past libvterm's bottom edge.
+               height
                width (vterm--get-shell)))
            :coding 'no-conversion
            :connection-type 'pty
