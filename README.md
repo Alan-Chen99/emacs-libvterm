@@ -403,6 +403,13 @@ behavior can be achieved by using the universal prefix (i.e., calling `C-u C-l`)
 
 Shell to run in a new vterm. It defaults to `$SHELL`.
 
+## `vterm-wrapper-shell`
+
+Shell that runs `stty` on the new pty and then execs `vterm-shell`, on the
+host of `default-directory`. It defaults to `/bin/bash`, which passes the
+`BASH_FUNC_*%%` variables of exported functions through to the shell it execs.
+Set it to `/bin/sh` for a remote host without bash.
+
 ## `vterm-environment`
 
 To add more environment variables there is the custom `vterm-environment` which

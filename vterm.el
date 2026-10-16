@@ -182,6 +182,15 @@ the executable."
   :type 'string
   :group 'vterm)
 
+(defcustom vterm-wrapper-shell "/bin/bash"
+  "Shell that sets up the pty with stty and then execs `vterm-shell'.
+It runs on the host of `default-directory', so it must exist there.
+bash passes exported functions (`BASH_FUNC_*%%' variables in
+`vterm-environment') through to the shell it execs; dash and other
+shells drop them.  Bind it to \"/bin/sh\" for a host without bash."
+  :type 'string
+  :group 'vterm)
+
 (defcustom vterm-tramp-shells
   '(("ssh" login-shell) ("scp" login-shell) ("docker" "/bin/sh"))
   "The shell that gets run in the vterm for tramp.
@@ -923,8 +932,7 @@ when a filter returns nil, lookup skips the parent keymap.")
            :name "vterm"
            :buffer (current-buffer)
            :command
-           ;; bash allows `BASH_FUNC_*%%` env vars to pass through
-           `("/bin/bash" "-c"
+           `(,vterm-wrapper-shell "-c"
              ,(format
                "stty -nl sane %s erase ^? rows %d columns %d >/dev/null && exec %s"
                ;; Some stty implementations (i.e. that of *BSD) do not
