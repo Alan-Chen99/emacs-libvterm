@@ -659,7 +659,7 @@ static void term_redraw(Term *term, emacs_env *env) {
   }
   term->elisp_code_p_insert = &term->elisp_code_first;
 
-  if (term->selection_data) {
+  if (term->selection_data && term->selection_complete) {
     emacs_value selection_mask = env->make_integer(env, term->selection_mask);
     emacs_value selection_data = env->make_string(env, term->selection_data,
                                                   strlen(term->selection_data));
@@ -667,6 +667,7 @@ static void term_redraw(Term *term, emacs_env *env) {
     free(term->selection_data);
     term->selection_data = NULL;
     term->selection_mask = 0;
+    term->selection_complete = false;
   }
 
   term->is_invalidated = false;
@@ -1215,11 +1216,15 @@ static int set_selection(VTermSelectionMask mask, VTermStringFragment frag,
       free(term->selection_data);
     }
     term->selection_data = NULL;
+    term->selection_complete = false;
   }
 
   if (frag.len) {
     term->selection_data =
         concat(term->selection_data, frag.str, frag.len, true);
+  }
+  if (frag.final) {
+    term->selection_complete = true;
   }
   return 1;
 }
@@ -1315,6 +1320,7 @@ emacs_value Fvterm_new(emacs_env *env, ptrdiff_t nargs, emacs_value args[],
   term->elisp_code_p_insert = &term->elisp_code_first;
   term->selection_data = NULL;
   term->selection_mask = 0;
+  term->selection_complete = false;
 
   term->cmd_buffer = NULL;
 
@@ -1428,9 +1434,19 @@ emacs_value Fvterm_write_input(emacs_env *env, ptrdiff_t nargs,
     memcpy(term->input_carry, bytes + len, keep);
   }
 
+  /* A terminator that starts a write ends an OSC 52 whose data came
+     earlier.  The bundled libvterm, like other older versions, then drops
+     the empty final fragment instead of passing it to set_selection. */
+  bool ends_selection =
+      term->selection_data && !term->selection_complete && len > 0 &&
+      (bytes[0] == 0x07 || (len > 1 && bytes[0] == 0x1b && bytes[1] == '\\'));
+
   if (len > 0) {
     vterm_input_write(term->vt, bytes, len);
     vterm_screen_flush_damage(term->vts);
+  }
+  if (ends_selection) {
+    term->selection_complete = true;
   }
   free(bytes);
 

@@ -105,6 +105,10 @@ typedef struct Term {
   /* clipboard, primary, secondary, select, or cut buffers 0 through 7 */
   int selection_mask; /* see VTermSelectionMask in vterm.h */
   char *selection_data;
+  /* The OSC 52 sequence has ended.  An OSC 52 longer than one pty read
+     arrives in several fragments, and applying the first ones alone would
+     put a truncated selection on the kill ring. */
+  bool selection_complete;
   char selection_buf[SELECTION_BUF_LEN];
 
   /* the size of dirs almost = window height, value = directory of that line */
