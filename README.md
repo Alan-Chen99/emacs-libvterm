@@ -107,11 +107,11 @@ git clone https://github.com/akermu/emacs-libvterm.git
 ```
 
 By default, vterm will try to find if `libvterm` is installed. If it is not found,
-emacs-libvterm will download the latest version available of `libvterm` (from
-[here](https://github.com/neovim/libvterm)), compile it, and use it. If you
-always want to use the vendored version as opposed to the one on you system, set
-`USE_SYSTEM_LIBVTERM` to `no`. To do this, change `cmake ..` with `cmake
--DUSE_SYSTEM_LIBVTERM=no ..` in the following instructions.
+emacs-libvterm will download the `libvterm` version pinned in `CMakeLists.txt`
+(from [this mirror](https://github.com/Sbozzolo/libvterm-mirror.git)), compile
+it, and use it. If you always want to use the vendored version as opposed to the
+one on your system, set `USE_SYSTEM_LIBVTERM` to `no`. To do this, change `cmake
+..` with `cmake -DUSE_SYSTEM_LIBVTERM=no ..` in the following instructions.
 
 Build the module with:
 
