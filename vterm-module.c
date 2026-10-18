@@ -638,20 +638,20 @@ static void term_redraw(Term *term, emacs_env *env) {
   }
 
   if (term->title_changed) {
-    set_title(env, env->make_string(env, term->title, strlen(term->title)));
+    set_title(env, make_utf8_string(env, term->title, strlen(term->title)));
     term->title_changed = false;
   }
 
   if (term->directory_changed) {
     set_directory(
-        env, env->make_string(env, term->directory, strlen(term->directory)));
+        env, make_utf8_string(env, term->directory, strlen(term->directory)));
     term->directory_changed = false;
   }
 
   while (term->elisp_code_first) {
     ElispCodeListNode *node = term->elisp_code_first;
     term->elisp_code_first = node->next;
-    emacs_value elisp_code = env->make_string(env, node->code, node->code_len);
+    emacs_value elisp_code = make_utf8_string(env, node->code, node->code_len);
     vterm_eval(env, elisp_code);
 
     free(node->code);
@@ -661,7 +661,7 @@ static void term_redraw(Term *term, emacs_env *env) {
 
   if (term->selection_data) {
     emacs_value selection_mask = env->make_integer(env, term->selection_mask);
-    emacs_value selection_data = env->make_string(env, term->selection_data,
+    emacs_value selection_data = make_utf8_string(env, term->selection_data,
                                                   strlen(term->selection_data));
     vterm_set_selection(env, selection_mask, selection_data);
     free(term->selection_data);
@@ -903,7 +903,7 @@ static void term_flush_output(Term *term, emacs_env *env) {
     char buffer[len];
     len = vterm_output_read(term->vt, buffer, len);
 
-    emacs_value output = env->make_string(env, buffer, len);
+    emacs_value output = make_utf8_string(env, buffer, len);
     env->funcall(env, Fvterm_flush_output, 1, (emacs_value[]){output});
   }
 }
@@ -1420,7 +1420,7 @@ emacs_value Fvterm_get_pwd(emacs_env *env, ptrdiff_t nargs, emacs_value args[],
   int row = linenr_to_row(term, linenum);
   char *dir = get_row_directory(term, row);
 
-  return dir ? env->make_string(env, dir, strlen(dir)) : Qnil;
+  return dir ? make_utf8_string(env, dir, strlen(dir)) : Qnil;
 }
 
 emacs_value Fvterm_get_icrnl(emacs_env *env, ptrdiff_t nargs,

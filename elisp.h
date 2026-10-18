@@ -66,6 +66,7 @@ void bind_function(emacs_env *env, const char *name, emacs_value Sfun);
 void provide(emacs_env *env, const char *feature);
 emacs_value symbol_value(emacs_env *env, emacs_value symbol);
 ptrdiff_t string_bytes(emacs_env *env, emacs_value string);
+emacs_value make_utf8_string(emacs_env *env, const char *str, size_t len);
 emacs_value length(emacs_env *env, emacs_value string);
 emacs_value list(emacs_env *env, emacs_value elements[], ptrdiff_t len);
 emacs_value nth(emacs_env *env, int idx, emacs_value list);
