@@ -109,6 +109,8 @@ typedef struct Term {
      arrives in several fragments, and applying the first ones alone would
      put a truncated selection on the kill ring. */
   bool selection_complete;
+  /* Counts the OSC 52 sequences begun. */
+  unsigned selection_generation;
   char selection_buf[SELECTION_BUF_LEN];
 
   /* the size of dirs almost = window height, value = directory of that line */

@@ -1211,6 +1211,7 @@ static int set_selection(VTermSelectionMask mask, VTermStringFragment frag,
   Term *term = (Term *)user;
 
   if (frag.initial) {
+    term->selection_generation++;
     term->selection_mask = mask;
     if (term->selection_data) {
       free(term->selection_data);
@@ -1321,6 +1322,7 @@ emacs_value Fvterm_new(emacs_env *env, ptrdiff_t nargs, emacs_value args[],
   term->selection_data = NULL;
   term->selection_mask = 0;
   term->selection_complete = false;
+  term->selection_generation = 0;
 
   term->cmd_buffer = NULL;
 
@@ -1407,6 +1409,31 @@ static size_t utf8_incomplete_tail(const char *bytes, size_t len) {
   return 0;
 }
 
+/* How BYTES end the OSC 52 that an earlier write left open: 1 if they
+   terminate it, -1 if they abort it, 0 if it stays open.
+
+   CAN and SUB abort the string, and BEL terminates it.  After an ESC,
+   further ESCs, C0 controls and DEL decide nothing; the first other byte
+   terminates the string if it is a backslash and aborts it otherwise, as
+   a BEL does there (vterm_input_write in parser.c). */
+static int selection_end(const char *bytes, size_t len) {
+  bool esc = false;
+  for (size_t i = 0; i < len; i++) {
+    unsigned char c = bytes[i];
+    if (c == 0x1b)
+      esc = true;
+    else if (c == 0x18 || c == 0x1a)
+      return -1;
+    else if (esc && c != 0x07 && (c < 0x20 || c == 0x7f))
+      continue;
+    else if (esc)
+      return c == '\\' ? 1 : -1;
+    else if (c == 0x07)
+      return 1;
+  }
+  return 0;
+}
+
 emacs_value Fvterm_write_input(emacs_env *env, ptrdiff_t nargs,
                                emacs_value args[], void *data) {
   Term *term = env->get_user_ptr(env, args[0]);
@@ -1434,19 +1461,29 @@ emacs_value Fvterm_write_input(emacs_env *env, ptrdiff_t nargs,
     memcpy(term->input_carry, bytes + len, keep);
   }
 
-  /* A terminator that starts a write ends an OSC 52 whose data came
-     earlier.  The bundled libvterm, like other older versions, then drops
-     the empty final fragment instead of passing it to set_selection. */
-  bool ends_selection =
-      term->selection_data && !term->selection_complete && len > 0 &&
-      (bytes[0] == 0x07 || (len > 1 && bytes[0] == 0x1b && bytes[1] == '\\'));
+  /* An OSC 52 whose data came in earlier writes ends in this one.  When
+     the terminator starts the write, the bundled libvterm, like other
+     older versions, drops the empty final fragment instead of passing it
+     to set_selection; and no libvterm reports a selection that CAN, SUB or
+     ESC aborts.  GENERATION tells whether this write also began another
+     OSC 52, which the outcome must not touch. */
+  int ends = term->selection_data && !term->selection_complete
+                 ? selection_end(bytes, len)
+                 : 0;
+  unsigned generation = term->selection_generation;
 
   if (len > 0) {
     vterm_input_write(term->vt, bytes, len);
     vterm_screen_flush_damage(term->vts);
   }
-  if (ends_selection) {
-    term->selection_complete = true;
+  if (ends && generation == term->selection_generation) {
+    if (ends > 0) {
+      term->selection_complete = true;
+    } else {
+      free(term->selection_data);
+      term->selection_data = NULL;
+      term->selection_mask = 0;
+    }
   }
   free(bytes);
 
