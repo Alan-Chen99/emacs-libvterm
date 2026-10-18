@@ -1,5 +1,7 @@
 #include "elisp.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 // Emacs symbols
 emacs_value Qt;
@@ -77,6 +79,73 @@ void provide(emacs_env *env, const char *feature) {
 
 emacs_value symbol_value(emacs_env *env, emacs_value symbol) {
   return env->funcall(env, Fsymbol_value, 1, (emacs_value[]){symbol});
+}
+
+/* Length of the well-formed UTF-8 sequence (RFC 3629) at S, or 0. */
+static size_t utf8_sequence_length(const unsigned char *s, size_t len) {
+  unsigned char c = s[0];
+  size_t need;
+  unsigned char lo = 0x80, hi = 0xBF; /* bounds for the second byte */
+  if (c < 0x80)
+    return 1;
+  else if (c >= 0xC2 && c <= 0xDF)
+    need = 2;
+  else if (c >= 0xE0 && c <= 0xEF) {
+    need = 3;
+    if (c == 0xE0)
+      lo = 0xA0; /* overlong */
+    if (c == 0xED)
+      hi = 0x9F; /* surrogates */
+  } else if (c >= 0xF0 && c <= 0xF4) {
+    need = 4;
+    if (c == 0xF0)
+      lo = 0x90; /* overlong */
+    if (c == 0xF4)
+      hi = 0x8F; /* above U+10FFFF */
+  } else
+    return 0;
+  if (len < need || s[1] < lo || s[1] > hi)
+    return 0;
+  for (size_t i = 2; i < need; i++)
+    if ((s[i] & 0xC0) != 0x80)
+      return 0;
+  return need;
+}
+
+/* make_string, with every byte of STR that is not part of well-formed
+   UTF-8 replaced by U+FFFD.  Bytes from the terminal (OSC payloads,
+   libvterm's replies) can be anything, but make_string accepts only
+   UTF-8: Emacs 28 and later signal, and earlier versions return the
+   wrong string. */
+emacs_value make_utf8_string(emacs_env *env, const char *str, size_t len) {
+  const unsigned char *s = (const unsigned char *)str;
+  size_t i = 0;
+  while (i < len) {
+    size_t n = utf8_sequence_length(s + i, len - i);
+    if (!n)
+      break;
+    i += n;
+  }
+  if (i == len)
+    return env->make_string(env, str, len);
+
+  char *buf = malloc(len * 3);
+  size_t out = 0;
+  for (i = 0; i < len;) {
+    size_t n = utf8_sequence_length(s + i, len - i);
+    if (n) {
+      memcpy(buf + out, s + i, n);
+      out += n;
+      i += n;
+    } else {
+      memcpy(buf + out, "\xEF\xBF\xBD", 3);
+      out += 3;
+      i++;
+    }
+  }
+  emacs_value result = env->make_string(env, buf, out);
+  free(buf);
+  return result;
 }
 
 ptrdiff_t string_bytes(emacs_env *env, emacs_value string) {
