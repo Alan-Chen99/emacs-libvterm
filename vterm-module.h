@@ -123,6 +123,8 @@ typedef struct Term {
   bool disable_underline;
   bool disable_inverse_video;
   bool ignore_blink_cursor;
+  int mouse_mode; /* VTERM_PROP_MOUSE_NONE, _CLICK, _DRAG, or _MOVE */
+  bool altscreen;
 
   char *cmd_buffer;
 
@@ -167,6 +169,14 @@ emacs_value Fvterm_set_pty_name(emacs_env *env, ptrdiff_t nargs,
                                 emacs_value args[], void *data);
 emacs_value Fvterm_get_icrnl(emacs_env *env, ptrdiff_t nargs,
                              emacs_value args[], void *data);
+emacs_value Fvterm_get_mouse_mode(emacs_env *env, ptrdiff_t nargs,
+                                  emacs_value args[], void *data);
+emacs_value Fvterm_get_altscreen(emacs_env *env, ptrdiff_t nargs,
+                                 emacs_value args[], void *data);
+emacs_value Fvterm_mouse_move(emacs_env *env, ptrdiff_t nargs,
+                              emacs_value args[], void *data);
+emacs_value Fvterm_mouse_button(emacs_env *env, ptrdiff_t nargs,
+                                emacs_value args[], void *data);
 
 emacs_value Fvterm_get_pwd(emacs_env *env, ptrdiff_t nargs, emacs_value args[],
                            void *data);

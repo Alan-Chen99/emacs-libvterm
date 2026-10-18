@@ -317,6 +317,27 @@ If no region is selected when the enter key is pressed it will copy the current
 line from start to end. If `vterm-copy-exclude-prompt` is true it will skip
 the prompt and not include it in the copy.
 
+## Mouse
+
+When the program in the terminal turns on mouse reporting (tmux with
+`mouse on`, htop, vim with `mouse=a`, ...), clicks, drags and the wheel
+go to it, in whichever encoding it asked for. A drag that leaves the
+window reports the nearest cell, so tmux can scroll a selection. Hold
+Shift to select text with Emacs instead, as in xterm. In
+`vterm-copy-mode` the mouse always stays with Emacs.
+
+The bindings live in `vterm-mouse-map`, the parent of `vterm-mode-map`,
+and each one is active only while the program can use the event;
+otherwise the click or wheel does what it does in any Emacs buffer.
+
+Motion is reported only while a button is held, even for programs that
+ask for all motion (mode 1003): Emacs produces motion events only while
+it is tracking the mouse, and tracking it outside a drag would run a
+command on every pointer move.
+
+`vterm-mouse-wheel-at` sends one wheel step from Lisp, e.g. for a
+keyboard binding that scrolls the program.
+
 ## `vterm-clear-scrollback`
 
 `vterm-clear-scrollback` does exactly what the name suggests: it clears the
@@ -487,6 +508,14 @@ like `isearch-forward`. if this variable is not-nil the
 fake-newlines are removed on entering copy-mode and re-inserted
 on leaving copy mode. Also `truncate-lines` is set to `t` on entering
 copy-mode and set to `nil` on leaving.
+
+## `vterm-alternate-scroll-lines`
+
+Full-screen programs such as `less` run on the alternate screen, which
+has no scrollback for Emacs to scroll. When such a program has not
+asked for mouse reporting, each wheel step sends this many up or down
+arrow keys instead (default 3), like xterm's `alternateScroll`. Set it
+to nil to have the wheel scroll the Emacs window.
 
 ## `vterm-tramp-shells`
 

@@ -772,6 +772,10 @@ static int term_settermprop(VTermProp prop, VTermValue *val, void *user_data) {
     break;
   case VTERM_PROP_ALTSCREEN:
     invalidate_terminal(term, 0, term->height);
+    term->altscreen = val->boolean;
+    break;
+  case VTERM_PROP_MOUSE:
+    term->mouse_mode = val->number;
     break;
   default:
     return 0;
@@ -909,7 +913,27 @@ static void term_flush_output(Term *term, emacs_env *env) {
     char buffer[len];
     len = vterm_output_read(term->vt, buffer, len);
 
-    emacs_value output = make_utf8_string(env, buffer, len);
+    /* The output is bytes for the pty, not text: an X10 mouse report puts
+       a column or row past 94 in a single byte above 0x7F.  make_string
+       accepts only UTF-8, so each byte goes in as the character of the
+       same code and encoding as latin-1 turns them back into exactly
+       those bytes, in a unibyte string. */
+    char *latin1 = malloc(2 * len);
+    size_t n = 0;
+    for (size_t i = 0; i < len; i++) {
+      unsigned char c = buffer[i];
+      if (c < 0x80) {
+        latin1[n++] = c;
+      } else {
+        latin1[n++] = 0xC0 | (c >> 6);
+        latin1[n++] = 0x80 | (c & 0x3F);
+      }
+    }
+    emacs_value chars = env->make_string(env, latin1, n);
+    free(latin1);
+    emacs_value output = env->funcall(
+        env, env->intern(env, "encode-coding-string"), 2,
+        (emacs_value[]){chars, env->intern(env, "iso-latin-1-unix")});
     env->funcall(env, Fvterm_flush_output, 1, (emacs_value[]){output});
   }
 }
@@ -1313,6 +1337,11 @@ emacs_value Fvterm_new(emacs_env *env, ptrdiff_t nargs, emacs_value args[],
   term->input_carry = NULL;
   term->input_carry_len = 0;
 
+  /* vterm_screen_reset ran before the callbacks were installed, so
+     term_settermprop never saw the initial values. */
+  term->mouse_mode = VTERM_PROP_MOUSE_NONE;
+  term->altscreen = false;
+
   term->title = NULL;
   term->title_changed = false;
 
@@ -1561,6 +1590,45 @@ emacs_value Fvterm_get_icrnl(emacs_env *env, ptrdiff_t nargs,
   return Qnil;
 }
 
+emacs_value Fvterm_get_mouse_mode(emacs_env *env, ptrdiff_t nargs,
+                                  emacs_value args[], void *data) {
+  Term *term = env->get_user_ptr(env, args[0]);
+  return env->make_integer(env, term->mouse_mode);
+}
+
+emacs_value Fvterm_get_altscreen(emacs_env *env, ptrdiff_t nargs,
+                                 emacs_value args[], void *data) {
+  Term *term = env->get_user_ptr(env, args[0]);
+  return term->altscreen ? Qt : Qnil;
+}
+
+emacs_value Fvterm_mouse_move(emacs_env *env, ptrdiff_t nargs,
+                              emacs_value args[], void *data) {
+  Term *term = env->get_user_ptr(env, args[0]);
+  int linenr = env->extract_integer(env, args[1]);
+  int col = env->extract_integer(env, args[2]);
+  /* term->linenum counts the lines the buffer holds, and the screen is its
+     last term->height of them.  sb_current is not used: it runs ahead of the
+     buffer whenever output has arrived but not yet been redrawn.  A drag
+     past the screen's edge reports the nearest cell, as xterm does. */
+  int row = linenr - 1 - ((int)term->linenum - term->height);
+  row = MAX(0, MIN(row, term->height - 1));
+  col = MAX(0, MIN(col, term->width - 1));
+  vterm_mouse_move(term->vt, row, col, VTERM_MOD_NONE);
+  term_flush_output(term, env);
+  return Qnil;
+}
+
+emacs_value Fvterm_mouse_button(emacs_env *env, ptrdiff_t nargs,
+                                emacs_value args[], void *data) {
+  Term *term = env->get_user_ptr(env, args[0]);
+  int button = env->extract_integer(env, args[1]);
+  bool pressed = env->is_not_nil(env, args[2]);
+  vterm_mouse_button(term->vt, button, pressed, VTERM_MOD_NONE);
+  term_flush_output(term, env);
+  return Qnil;
+}
+
 emacs_value Fvterm_reset_cursor_point(emacs_env *env, ptrdiff_t nargs,
                                       emacs_value args[], void *data) {
   Term *term = env->get_user_ptr(env, args[0]);
@@ -1684,6 +1752,29 @@ int emacs_module_init(struct emacs_runtime *ert) {
   fun = env->make_function(env, 1, 1, Fvterm_get_icrnl,
                            "Get the icrnl state of the pty", NULL);
   bind_function(env, "vterm--get-icrnl", fun);
+
+  fun = env->make_function(env, 1, 1, Fvterm_get_mouse_mode,
+                           "Get the mouse reporting mode of the terminal", NULL);
+  bind_function(env, "vterm--get-mouse-mode", fun);
+
+  fun = env->make_function(env, 1, 1, Fvterm_get_altscreen,
+                           "Whether the alternate screen is active.", NULL);
+  bind_function(env, "vterm--get-altscreen", fun);
+
+  fun = env->make_function(
+      env, 3, 3, Fvterm_mouse_move,
+      "Move the mouse to buffer line LINE, column COL.\n"
+      "Reports the motion if the application asked for it.",
+      NULL);
+  bind_function(env, "vterm--mouse-move", fun);
+
+  fun = env->make_function(
+      env, 3, 3, Fvterm_mouse_button,
+      "Press or release mouse BUTTON (1-3; 4/5 are wheel up/down).\n"
+      "Reports it at the last `vterm--mouse-move' position if the\n"
+      "application asked for mouse reporting.",
+      NULL);
+  bind_function(env, "vterm--mouse-button", fun);
 
   provide(env, "vterm-module");
 
