@@ -2016,21 +2016,34 @@ Return nil when the pointer is not over WINDOW's frame."
     (when posn
       (with-current-buffer (window-buffer window)
         (let* ((pt (posn-point posn))
-               ;; The x of the terminal's first column: line numbers sit
-               ;; inside the text area before it, and horizontal
-               ;; scrolling moves it left in units of the frame's columns.
-               (x0 (- (if (bound-and-true-p display-line-numbers)
-                          (with-selected-window window
-                            (line-number-display-width t))
-                        0)
-                      (* (window-hscroll window)
-                         (frame-char-width (window-frame window))))))
-          (vterm--mouse-move vterm--term
-                             (line-number-at-pos pt)
-                             ;; Columns of the window's font, which text
-                             ;; scaling makes differ from the frame's.
-                             (/ (- (car (posn-x-y posn)) x0)
-                                (window-font-width window))))))))
+               (col
+                (save-excursion
+                  (goto-char pt)
+                  (if (< pt (line-end-position))
+                      ;; Over text: the buffer holds one line per row and
+                      ;; one character per cell (two for a wide one), so
+                      ;; its column is the terminal's, whatever the glyphs'
+                      ;; pixel widths, line numbers or horizontal scroll.
+                      (current-column)
+                    ;; Past the end of the line: count the window's
+                    ;; columns from there, or, when horizontal scrolling
+                    ;; hides it, from the window's first column, which
+                    ;; line numbers push right.  Text scaling makes the
+                    ;; window's columns differ from the frame's.
+                    (let ((x (car (posn-x-y posn)))
+                          (eol (posn-at-point pt window))
+                          (cw (window-font-width window)))
+                      (if eol
+                          (+ (current-column)
+                             (max 0 (/ (- x (car (posn-x-y eol))) cw)))
+                        (/ (- x (if (bound-and-true-p display-line-numbers)
+                                    (with-selected-window window
+                                      (line-number-display-width t))
+                                  0)
+                              (- (* (window-hscroll window)
+                                    (frame-char-width (window-frame window)))))
+                           cw)))))))
+          (vterm--mouse-move vterm--term (line-number-at-pos pt) col))))))
 
 (defun vterm-mouse-wheel-at (window posn up)
   "Send one wheel step at POSN in WINDOW to its terminal; UP is its direction.
@@ -2084,37 +2097,46 @@ leaves the frame, an event's position can name a wrong line of WINDOW."
     (select-window window)
     (vterm--mouse-move-to window start)
     (vterm--mouse-button vterm--term button t)
-    (track-mouse
-      (let (done)
-        (while (not done)
-          (let ((ev (read-key)))
-            (cond
-             ((mouse-movement-p ev)
-              (vterm--mouse-move-to window nil))
-             ;; The pointer crossing into another part of the frame yields
-             ;; a bare area symbol ahead of the event there.
-             ((memq ev '(menu-bar tab-bar tool-bar tab-line header-line mode-line
-                         vertical-line left-margin right-margin left-fringe
-                         right-fringe vertical-scroll-bar horizontal-scroll-bar
-                         internal-border right-divider bottom-divider)))
-             ((memq (car-safe ev) '(help-echo switch-frame select-window
-                                    focus-in focus-out)))
-             (t
-              (setq done t)
-              (cond
-               ;; The release: a click, drag, double or triple click.
-               ((and (eq (event-basic-type ev) basic)
-                     (not (memq 'down (event-modifiers ev))))
-                (vterm--mouse-move-to window nil))
-               ;; Under `track-mouse', xterm-mouse-mode turns a release
-               ;; outside the text area into a NUL, which `read-key'
-               ;; returns as C-@ or C-SPC.
-               ((and (memq ev '(0 ?\C-\s)) (not (display-graphic-p)))
-                (vterm--mouse-move-to window nil))
-               ;; Anything else ends the drag and is then handled normally.
-               (t (push ev unread-command-events)))
-              (with-current-buffer (window-buffer window)
-                (vterm--mouse-button vterm--term button nil))))))))))
+    (let ((buf (current-buffer)))
+      (unwind-protect
+          (track-mouse
+            (let (done)
+              (while (not done)
+                (let ((ev (read-key)))
+                  (cond
+                   ((mouse-movement-p ev)
+                    (vterm--mouse-move-to window nil))
+                   ;; The pointer crossing into another part of the frame
+                   ;; yields a bare area symbol ahead of the event there;
+                   ;; `read-key' drops that event, so place the drag by the
+                   ;; pointer now.
+                   ((memq ev '(menu-bar tab-bar tool-bar tab-line header-line mode-line
+                               vertical-line left-margin right-margin left-fringe
+                               right-fringe vertical-scroll-bar horizontal-scroll-bar
+                               internal-border right-divider bottom-divider))
+                    (vterm--mouse-move-to window nil))
+                   ((memq (car-safe ev) '(help-echo switch-frame select-window
+                                          focus-in focus-out)))
+                   (t
+                    (setq done t)
+                    (cond
+                     ;; The release: a click, drag, double or triple click.
+                     ((and (eq (event-basic-type ev) basic)
+                           (not (memq 'down (event-modifiers ev))))
+                      (vterm--mouse-move-to window nil))
+                     ;; Under `track-mouse', xterm-mouse-mode turns a release
+                     ;; outside the text area into a NUL, which `read-key'
+                     ;; returns as C-@ or C-SPC.
+                     ((and (memq ev '(0 ?\C-\s)) (not (display-graphic-p)))
+                      (vterm--mouse-move-to window nil))
+                     ;; Anything else ends the drag and is then handled normally.
+                     (t (push ev unread-command-events)))))))))
+        ;; Release even if the drag was cut short by an error or a quit,
+        ;; or libvterm keeps the button down and drops the next press.
+        (when (buffer-live-p buf)
+          (with-current-buffer buf
+            (when vterm--term
+              (vterm--mouse-button vterm--term button nil))))))))
 
 (defun vterm--reinsert-fake-newlines ()
   "Reinsert fake newline from `vterm--copy-mode-fake-newlines'."
