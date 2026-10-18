@@ -715,6 +715,29 @@ them by scroll direction, the opposite of the wheel's."
     map)
   "Mouse bindings that reach the terminal application; parent of `vterm-mode-map'.")
 
+(defvar pixel-scroll-precision-mode-map)
+
+(defvar vterm--pixel-scroll-map
+  (let ((map (make-sparse-keymap)))
+    (dolist (wheel '(wheel-up wheel-down))
+      (define-key map (vector wheel)
+                  `(menu-item "" vterm-mouse-wheel
+                              :filter ,(lambda (cmd)
+                                         (or (vterm--mouse-wheel-filter cmd)
+                                             (lookup-key pixel-scroll-precision-mode-map
+                                                         (vector wheel)))))))
+    map)
+  "Stands in for `pixel-scroll-precision-mode-map' in vterm buffers.
+A minor mode's map takes precedence over `vterm-mouse-map', so with
+`pixel-scroll-precision-mode' on the wheel would never reach the
+application.  The filter falls back to that mode's binding explicitly:
+when a filter returns nil, lookup skips the parent keymap.")
+
+;; Emacs before 29 has pixel-scroll without the precision mode.
+(with-eval-after-load 'pixel-scroll
+  (when (boundp 'pixel-scroll-precision-mode-map)
+    (set-keymap-parent vterm--pixel-scroll-map pixel-scroll-precision-mode-map)))
+
 (defvar vterm-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map vterm-mouse-map)
@@ -799,6 +822,9 @@ them by scroll direction, the opposite of the wheel's."
 (define-derived-mode vterm-mode fundamental-mode "VTerm"
   "Major mode for vterm buffer."
   (buffer-disable-undo)
+  (setq-local minor-mode-overriding-map-alist
+              (cons (cons 'pixel-scroll-precision-mode vterm--pixel-scroll-map)
+                    minor-mode-overriding-map-alist))
   (and (boundp 'display-line-numbers)
        (let ((font-height (expt text-scale-mode-step text-scale-mode-amount)))
          (setq vterm--linenum-remapping
