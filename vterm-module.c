@@ -907,7 +907,27 @@ static void term_flush_output(Term *term, emacs_env *env) {
     char buffer[len];
     len = vterm_output_read(term->vt, buffer, len);
 
-    emacs_value output = env->make_string(env, buffer, len);
+    /* The output is bytes for the pty, not text: an X10 mouse report puts
+       a column or row past 94 in a single byte above 0x7F.  make_string
+       accepts only UTF-8, so each byte goes in as the character of the
+       same code and encoding as latin-1 turns them back into exactly
+       those bytes, in a unibyte string. */
+    char *latin1 = malloc(2 * len);
+    size_t n = 0;
+    for (size_t i = 0; i < len; i++) {
+      unsigned char c = buffer[i];
+      if (c < 0x80) {
+        latin1[n++] = c;
+      } else {
+        latin1[n++] = 0xC0 | (c >> 6);
+        latin1[n++] = 0x80 | (c & 0x3F);
+      }
+    }
+    emacs_value chars = env->make_string(env, latin1, n);
+    free(latin1);
+    emacs_value output = env->funcall(
+        env, env->intern(env, "encode-coding-string"), 2,
+        (emacs_value[]){chars, env->intern(env, "iso-latin-1-unix")});
     env->funcall(env, Fvterm_flush_output, 1, (emacs_value[]){output});
   }
 }
