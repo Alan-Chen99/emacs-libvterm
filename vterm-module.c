@@ -1384,6 +1384,23 @@ static size_t esc_control_tail(const char *bytes, size_t len) {
   return tail;
 }
 
+/* Length of the incomplete UTF-8 sequence that ends BYTES, or 0.
+
+   libvterm decodes a text run with one of two UTF-8 decoders, picked by
+   whether the run starts with an ASCII byte, so a character split
+   between two writes can reach two decoders and come out as U+FFFD. */
+static size_t utf8_incomplete_tail(const char *bytes, size_t len) {
+  for (size_t back = 1; back <= 3 && back <= len; back++) {
+    unsigned char c = bytes[len - back];
+    if ((c & 0xC0) == 0x80)
+      continue;
+    size_t need = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3
+                  : (c & 0xF8) == 0xF0 ? 4 : 0;
+    return back < need ? back : 0;
+  }
+  return 0;
+}
+
 emacs_value Fvterm_write_input(emacs_env *env, ptrdiff_t nargs,
                                emacs_value args[], void *data) {
   Term *term = env->get_user_ptr(env, args[0]);
@@ -1399,8 +1416,9 @@ emacs_value Fvterm_write_input(emacs_env *env, ptrdiff_t nargs,
   /* size counts the terminating NUL, which is not terminal input. */
   size_t len = carry + size - 1;
 
-  /* Held back until the next write, which completes the ESC. */
-  size_t keep = esc_control_tail(bytes, len);
+  /* Held back until the next write completes it.  At most one of the
+     two tails is non-empty: they share no byte values. */
+  size_t keep = esc_control_tail(bytes, len) + utf8_incomplete_tail(bytes, len);
   len -= keep;
   free(term->input_carry);
   term->input_carry = NULL;

@@ -585,7 +585,6 @@ Only background is used."
 (defvar-local vterm--insert-function (symbol-function #'insert))
 (defvar-local vterm--delete-char-function (symbol-function #'delete-char))
 (defvar-local vterm--delete-region-function (symbol-function #'delete-region))
-(defvar-local vterm--undecoded-bytes nil)
 (defvar-local vterm--copy-mode-fake-newlines nil)
 
 (defvar vterm-timer-delay 0.1
@@ -768,9 +767,6 @@ Exceptions are defined by `vterm-keymap-exceptions'."
                                        "LINES"
                                        "COLUMNS")
                                      process-environment))
-        ;; TODO: Figure out why inhibit is needed for curses to render correctly.
-        (inhibit-eol-conversion nil)
-        (coding-system-for-read 'binary)
         (process-adaptive-read-buffering nil)
         (width (max (- (window-max-chars-per-line) (vterm--get-margin-width))
                     vterm-min-window-width)))
@@ -813,7 +809,7 @@ Exceptions are defined by `vterm-keymap-exceptions'."
                (if (eq system-type 'berkeley-unix) "" "iutf8")
                (window-body-height)
                width (vterm--get-shell)))
-           ;; :coding 'no-conversion
+           :coding 'no-conversion
            :connection-type 'pty
            :file-handler t
            :filter #'vterm--filter
@@ -822,7 +818,16 @@ Exceptions are defined by `vterm-keymap-exceptions'."
            ;; vterm--sentinel will kill the buffer
            :sentinel (when (or vterm-exit-functions
                                vterm-kill-buffer-on-exit)
-                       #'vterm--sentinel))))
+                       #'vterm--sentinel)))
+    ;; `:coding' above is advisory: with `:file-handler', Tramp may build the
+    ;; process itself, and for a method without `tramp-direct-async' (sudo,
+    ;; su, sshx, ...) or a multi-hop it returns a connection process already
+    ;; set to utf-8.  A terminal stream must reach libvterm undecoded: a byte
+    ;; that is not valid UTF-8 decodes to a raw-byte character, which the
+    ;; module API rejects, and a dos eol-type eats the CR of every CRLF.
+    ;; Nothing waits between Tramp installing the filter and this call, so no
+    ;; output is decoded before it.
+    (set-process-coding-system vterm--process 'no-conversion 'no-conversion))
 
   ;; Change major-mode is not allowed
   ;; Vterm interfaces with an underlying process. Changing the major
@@ -1525,99 +1530,22 @@ value of `vterm-buffer-name'."
 (defun vterm--flush-output (output)
   "Send the virtual terminal's OUTPUT to the shell."
   (process-send-string vterm--process output))
-;; Terminal emulation
-;; This is the standard process filter for term buffers.
-;; It emulates (most of the features of) a VT100/ANSI-style terminal.
-
-;; References:
-;; [ctlseqs]: http://invisible-island.net/xterm/ctlseqs/ctlseqs.html
-;; [ECMA-48]: https://www.ecma-international.org/publications/standards/Ecma-048.htm
-;; [vt100]: https://vt100.net/docs/vt100-ug/chapter3.html
-
-(defconst vterm-control-seq-regexp
-  (concat
-   ;; A control character,
-   "\\(?:[\r\n\000\007\t\b\016\017]\\|"
-   ;; a C1 escape coded character (see [ECMA-48] section 5.3 "Elements
-   ;; of the C1 set"),
-   "\e\\(?:[DM78c=]\\|"
-   ;; another Emacs specific control sequence for term.el,
-   "AnSiT[^\n]+\n\\|"
-   ;; another Emacs specific control sequence for vterm.el
-   ;; printf "\e]%s\e\\"
-   "\\][^\e]+\e\\\\\\|"
-   ;; or an escape sequence (section 5.4 "Control Sequences"),
-   "\\[\\([\x30-\x3F]*\\)[\x20-\x2F]*[\x40-\x7E]\\)\\)")
-  "Regexp matching control sequences handled by term.el.")
-
-(defconst vterm-control-seq-prefix-regexp
-  "[\032\e]")
 
 (defun vterm--filter (process input)
   "I/O Event.  Feeds PROCESS's INPUT to the virtual terminal.
 
-Then triggers a redraw from the module."
+Then triggers a redraw from the module.
+INPUT is unibyte, since `vterm-mode' sets the process coding system to
+`no-conversion', and goes to libvterm as is: the module API copies a
+unibyte string's bytes unchanged.  libvterm parses control sequences
+and decodes UTF-8 itself, keeping state across calls, so a sequence or
+character split between two chunks needs no help here."
   (let ((inhibit-redisplay t)
-        (inhibit-eol-conversion t)
         (inhibit-read-only t)
-        (buf (process-buffer process))
-        (i 0)
-        (str-length (length input))
-        decoded-substring
-        funny)
+        (buf (process-buffer process)))
     (when (buffer-live-p buf)
       (with-current-buffer buf
-        ;; borrowed from term.el
-        ;; Handle non-control data.  Decode the string before
-        ;; counting characters, to avoid garbling of certain
-        ;; multibyte characters (https://github.com/akermu/emacs-libvterm/issues/394).
-        ;; same bug of term.el https://debbugs.gnu.org/cgi/bugreport.cgi?bug=1006
-        (when vterm--undecoded-bytes
-          (setq input (concat vterm--undecoded-bytes input))
-          (setq vterm--undecoded-bytes nil)
-          (setq str-length (length input)))
-        (while (< i str-length)
-          (setq funny (string-match vterm-control-seq-regexp input i))
-          (let ((ctl-end (if funny (match-end 0)
-                           (setq funny (string-match vterm-control-seq-prefix-regexp input i))
-                           (if funny
-                               (setq vterm--undecoded-bytes
-                                     (substring input funny))
-                             (setq funny str-length))
-                           ;; The control sequence ends somewhere
-                           ;; past the end of this string.
-                           (1+ str-length))))
-            (when (> funny i)
-              ;; Handle non-control data.  Decode the string before
-              ;; counting characters, to avoid garbling of certain
-              ;; multibyte characters (emacs bug#1006).
-              (setq decoded-substring
-                    (decode-coding-string
-                     (substring input i funny)
-                     locale-coding-system t))
-              ;; Check for multibyte characters that ends
-              ;; before end of string, and save it for
-              ;; next time.
-              (when (= funny str-length)
-                (let ((partial 0)
-                      (count (length decoded-substring)))
-                  (while (and (< partial count)
-                              (eq (char-charset (aref decoded-substring
-                                                      (- count 1 partial)))
-                                  'eight-bit))
-                    (cl-incf partial))
-                  (when (> (1+ count) partial 0)
-                    (setq vterm--undecoded-bytes
-                          (substring decoded-substring (- partial)))
-                    (setq decoded-substring
-                          (substring decoded-substring 0 (- partial)))
-                    (cl-decf str-length partial)
-                    (cl-decf funny partial))))
-              (ignore-errors (vterm--write-input vterm--term decoded-substring))
-              (setq i funny))
-            (when (<= ctl-end str-length)
-              (ignore-errors (vterm--write-input vterm--term (substring input i ctl-end))))
-            (setq i ctl-end)))
+        (vterm--write-input vterm--term input)
         (vterm--update vterm--term)))))
 
 (defun vterm--sentinel (process event)
