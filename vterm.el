@@ -1303,10 +1303,17 @@ Provide similar behavior as `insert' for vterm."
         ;; never send them -- the application itself stops the cursor at
         ;; the start of its input.  Either way, the part of the region the
         ;; cursor reaches is still the application's input.
-        (let ((prompt (vterm--get-prompt-point)))
-          (when (and prompt (< start prompt end))
-            (vterm-goto-char prompt)))
-        (let ((cursor (vterm--get-cursor-point)))
+        ;; `vterm-goto-char' also stops when output it did not cause, such
+        ;; as a redraw after a resize, arrives during a step, so it is
+        ;; retried until the cursor stops moving.
+        (let* ((prompt (vterm--get-prompt-point))
+               (target (if (and prompt (< start prompt end)) prompt start))
+               (cursor (vterm--get-cursor-point))
+               before)
+          (while (and (/= cursor target) (not (eql cursor before)))
+            (setq before cursor)
+            (vterm-goto-char target)
+            (setq cursor (vterm--get-cursor-point)))
           (cond
            ((and (< start cursor) (< cursor end))
             (cl-loop repeat (length (filter-buffer-substring cursor end)) do
