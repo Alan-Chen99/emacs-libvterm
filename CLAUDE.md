@@ -93,6 +93,16 @@ anything that can wait there, and do not defer installing the filter with
 slightly earlier window sends a remote TUI's entire opening paint to
 `internal-default-process-filter`, and libvterm receives nothing at all.
 
+`vterm--write-input` delays bytes but never alters them: it holds back a
+write's trailing incomplete UTF-8 sequence, or a trailing run of ESC, C0
+controls and DEL that starts at an ESC, and prepends it to the next write.
+libvterm picks a UTF-8 decoder per text run, so a character split between
+writes would render as U+FFFD; and inside an OSC or DCS string, a write ending
+in ESC plus a control makes libvterm emit a fragment of length -1, which
+crashes Emacs. The reverse direction is byte-exact as well: `term_flush_output`
+hands `vterm--flush-output` a unibyte string, because an X10 mouse report
+carries bytes above 0x7F that are not UTF-8.
+
 Upstream of Emacs's read the stream is deliberately *not* byte-exact: after
 vterm's `stty -nl sane ...` preamble the pty is cooked (`opost onlcr isig icanon
 ixon`), so LF leaves as CRLF and ^C/^S are eaten going in — a shell or TUI
