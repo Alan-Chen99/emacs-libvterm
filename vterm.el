@@ -1959,11 +1959,20 @@ Returns nil when mouse reporting is off or there is no active terminal."
   (and (not vterm--mouse-unreported) (not vterm-copy-mode)
        (vterm-mouse-reporting-p) cmd))
 
+(defun vterm--alternate-scroll-p ()
+  "Return non-nil if a wheel step becomes arrow keys in this buffer.
+That is when `vterm-alternate-scroll-lines' is set and the terminal is
+on the alternate screen.  A buffer with no terminal answers nil: keymap
+filters run in any buffer, for example in the temporary buffer where
+`substitute-command-keys' renders `vterm-mode-map' for a docstring, and
+the module dereferences the null terminal it gets for nil."
+  (and vterm-alternate-scroll-lines vterm--term
+       (vterm--get-altscreen vterm--term)))
+
 (defun vterm--mouse-wheel-filter (cmd)
   "Return CMD when the wheel should reach the application in this terminal."
   (and (not vterm--mouse-unreported) (not vterm-copy-mode)
-       (or (vterm-mouse-reporting-p)
-           (and vterm-alternate-scroll-lines (vterm--get-altscreen vterm--term)))
+       (or (vterm-mouse-reporting-p) (vterm--alternate-scroll-p))
        cmd))
 
 (defun vterm--mouse-pointer-posn (window)
@@ -1991,7 +2000,9 @@ Return nil when the pointer is not over WINDOW's frame."
 (defun vterm--mouse-move-to (window posn)
   "Move the terminal's mouse to POSN in WINDOW, or to the pointer if POSN is nil."
   (let ((posn (or posn (vterm--mouse-pointer-posn window))))
-    (when posn
+    ;; WINDOW can show another buffer by now: the terminal's buffer is
+    ;; killed when its process exits, also in the middle of a drag.
+    (when (and posn (buffer-local-value 'vterm--term (window-buffer window)))
       (with-current-buffer (window-buffer window)
         (let* ((pt (posn-point posn))
                (col
@@ -2034,7 +2045,7 @@ alternate screen.  Return nil, sending nothing, when neither applies."
            (vterm--mouse-move-to window posn)
            (vterm--mouse-button vterm--term (if up 4 5) t)
            t)
-          ((and vterm-alternate-scroll-lines (vterm--get-altscreen vterm--term))
+          ((vterm--alternate-scroll-p)
            (dotimes (_ vterm-alternate-scroll-lines)
              (vterm-send-key (if up "<up>" "<down>")))
            t))))
@@ -2073,6 +2084,8 @@ leaves the frame, an event's position can name a wrong line of WINDOW."
          (basic (event-basic-type event))
          (button (pcase basic ('mouse-1 1) ('mouse-2 2) ('mouse-3 3))))
     (select-window window)
+    (unless vterm--term
+      (user-error "No terminal in %s" (buffer-name)))
     (vterm--mouse-move-to window start)
     (vterm--mouse-button vterm--term button t)
     (let ((buf (current-buffer)))

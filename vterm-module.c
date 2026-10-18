@@ -1593,18 +1593,27 @@ emacs_value Fvterm_get_icrnl(emacs_env *env, ptrdiff_t nargs,
 emacs_value Fvterm_get_mouse_mode(emacs_env *env, ptrdiff_t nargs,
                                   emacs_value args[], void *data) {
   Term *term = env->get_user_ptr(env, args[0]);
+  /* Anything but a terminal, nil included, leaves get_user_ptr's
+     wrong-type-argument pending and returns NULL; returning at once
+     lets that error reach Lisp instead of crashing Emacs.  */
+  if (!term)
+    return Qnil;
   return env->make_integer(env, term->mouse_mode);
 }
 
 emacs_value Fvterm_get_altscreen(emacs_env *env, ptrdiff_t nargs,
                                  emacs_value args[], void *data) {
   Term *term = env->get_user_ptr(env, args[0]);
+  if (!term)
+    return Qnil;
   return term->altscreen ? Qt : Qnil;
 }
 
 emacs_value Fvterm_mouse_move(emacs_env *env, ptrdiff_t nargs,
                               emacs_value args[], void *data) {
   Term *term = env->get_user_ptr(env, args[0]);
+  if (!term)
+    return Qnil;
   int linenr = env->extract_integer(env, args[1]);
   int col = env->extract_integer(env, args[2]);
   /* term->linenum counts the lines the buffer holds, and the screen is its
@@ -1622,6 +1631,8 @@ emacs_value Fvterm_mouse_move(emacs_env *env, ptrdiff_t nargs,
 emacs_value Fvterm_mouse_button(emacs_env *env, ptrdiff_t nargs,
                                 emacs_value args[], void *data) {
   Term *term = env->get_user_ptr(env, args[0]);
+  if (!term)
+    return Qnil;
   int button = env->extract_integer(env, args[1]);
   bool pressed = env->is_not_nil(env, args[2]);
   vterm_mouse_button(term->vt, button, pressed, VTERM_MOD_NONE);
