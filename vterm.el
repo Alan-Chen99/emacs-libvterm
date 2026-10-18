@@ -154,6 +154,10 @@ the executable."
 (declare-function vterm--get-pwd-raw "vterm-module")
 (declare-function vterm--reset-point "vterm-module")
 (declare-function vterm--get-icrnl "vterm-module")
+(declare-function vterm--get-mouse-mode "vterm-module")
+(declare-function vterm--get-altscreen "vterm-module")
+(declare-function vterm--mouse-move "vterm-module")
+(declare-function vterm--mouse-button "vterm-module")
 
 (require 'subr-x)
 (require 'find-func)
@@ -164,6 +168,7 @@ the executable."
 (require 'face-remap)
 (require 'tramp)
 (require 'bookmark)
+(require 'mwheel)
 
 ;;; Options
 
@@ -398,6 +403,17 @@ If nil, cursor in any window may begin to blink or not blink because
 `blink-cursor-mode`is a global minor mode in Emacs,
 you can use `M-x blink-cursor-mode` to toggle."
   :type 'boolean
+  :group 'vterm)
+
+(defcustom vterm-alternate-scroll-lines 3
+  "Arrow keys one wheel step sends on the alternate screen, or nil.
+
+A full-screen program such as `less' runs on the alternate screen,
+which has no scrollback for Emacs to scroll through.  When the program
+has not asked for mouse reporting, each wheel step sends this many
+up or down arrow keys instead, like xterm's alternateScroll.  nil
+leaves the wheel to scroll the Emacs window."
+  :type '(choice (const :tag "Scroll the window" nil) natnum)
   :group 'vterm)
 
 (defcustom vterm-copy-exclude-prompt t
@@ -667,8 +683,41 @@ Exceptions are defined by `vterm-keymap-exceptions'."
     (kill-new (buffer-string)))
   (vterm-yank))
 
+(defun vterm--wheel-events (up)
+  "Events a wheel step arrives as: turned UP, or down if UP is nil.
+Emacs reports the wheel as `wheel-up' and `wheel-down', or as the events
+`mwheel' uses, `mouse-4' and `mouse-5' by default (X without XInput 2,
+a terminal with `xterm-mouse-mode' before Emacs 30).  `mwheel' names
+them by scroll direction, the opposite of the wheel's."
+  (delete-dups
+   (delq nil (if up
+                 (list 'wheel-up
+                       (bound-and-true-p mouse-wheel-down-event)
+                       (bound-and-true-p mouse-wheel-down-alternate-event))
+               (list 'wheel-down
+                     (bound-and-true-p mouse-wheel-up-event)
+                     (bound-and-true-p mouse-wheel-up-alternate-event))))))
+
+(defvar vterm-mouse-map
+  (let ((map (make-sparse-keymap)))
+    ;; Each binding is live only while the application can use the event,
+    ;; so otherwise lookup falls through to Emacs's own mouse commands.
+    (dolist (prefix '("" "double-" "triple-"))
+      (dolist (button '(1 2 3))
+        (define-key map (vector (intern (format "%sdown-mouse-%d" prefix button)))
+                    '(menu-item "" vterm-mouse-press :filter vterm--mouse-press-filter))
+        (dolist (kind '("down-" "" "drag-"))
+          (define-key map (vector (intern (format "S-%s%smouse-%d" prefix kind button)))
+                      '(menu-item "" vterm-mouse-unreported :filter vterm--mouse-press-filter))))
+      (dolist (wheel (append (vterm--wheel-events t) (vterm--wheel-events nil)))
+        (define-key map (vector (intern (format "%s%s" prefix wheel)))
+                    '(menu-item "" vterm-mouse-wheel :filter vterm--mouse-wheel-filter))))
+    map)
+  "Mouse bindings that reach the terminal application; parent of `vterm-mode-map'.")
+
 (defvar vterm-mode-map
   (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map vterm-mouse-map)
     (vterm--exclude-keys map vterm-keymap-exceptions)
     (define-key map (kbd "C-]")                 #'vterm--self-insert)
     (define-key map (kbd "M-<")                 #'vterm--self-insert)
@@ -1914,6 +1963,158 @@ Effectively toggle between the two positions."
   (when vterm--term
     (save-excursion
       (vterm-reset-cursor-point))))
+
+(defun vterm-mouse-reporting-p ()
+  "Return non-nil if the application has enabled mouse reporting.
+The returned value is the mouse mode as an integer:
+  1 = click, 2 = drag, 3 = move.
+Returns nil when mouse reporting is off or there is no active terminal."
+  (when vterm--term
+    (let ((mode (vterm--get-mouse-mode vterm--term)))
+      (and (> mode 0) mode))))
+
+(defvar vterm--mouse-unreported nil
+  "Non-nil while `vterm-mouse-unreported' looks up a binding.")
+
+(defun vterm--mouse-press-filter (cmd)
+  "Return CMD when the application in this terminal reports mouse buttons."
+  (and (not vterm--mouse-unreported) (not vterm-copy-mode)
+       (vterm-mouse-reporting-p) cmd))
+
+(defun vterm--mouse-wheel-filter (cmd)
+  "Return CMD when the wheel should reach the application in this terminal."
+  (and (not vterm--mouse-unreported) (not vterm-copy-mode)
+       (or (vterm-mouse-reporting-p)
+           (and vterm-alternate-scroll-lines (vterm--get-altscreen vterm--term)))
+       cmd))
+
+(defun vterm--mouse-pointer-posn (window)
+  "Position of the mouse pointer, moved to the nearest point inside WINDOW.
+Return nil when the pointer is not over WINDOW's frame."
+  (pcase-let* ((`(,frame ,x . ,y) (mouse-pixel-position))
+               (`(,left ,_ ,right ,_) (window-inside-pixel-edges window))
+               ;; `posn-at-x-y' counts y from the window's top, above the
+               ;; tab line and header line.  The body's top is computed
+               ;; here, since Emacs 27 counts the tab line into the body
+               ;; edges.
+               (top (nth 1 (window-pixel-edges window)))
+               (body-top (+ top
+                            ;; Tab lines exist from Emacs 27.
+                            (if (fboundp 'window-tab-line-height)
+                                (window-tab-line-height window)
+                              0)
+                            (window-header-line-height window)))
+               (body-bottom (+ body-top (window-body-height window t))))
+    (when (and x (eq frame (window-frame window)))
+      (posn-at-x-y (- (min (max x left) (1- right)) left)
+                   (- (min (max y body-top) (1- body-bottom)) top)
+                   window))))
+
+(defun vterm--mouse-move-to (window posn)
+  "Move the terminal's mouse to POSN in WINDOW, or to the pointer if POSN is nil."
+  (let ((posn (or posn (vterm--mouse-pointer-posn window))))
+    (when posn
+      (with-current-buffer (window-buffer window)
+        (let* ((pt (posn-point posn))
+               ;; The x of the terminal's first column: line numbers sit
+               ;; inside the text area before it, and horizontal
+               ;; scrolling moves it left in units of the frame's columns.
+               (x0 (- (if (bound-and-true-p display-line-numbers)
+                          (with-selected-window window
+                            (line-number-display-width t))
+                        0)
+                      (* (window-hscroll window)
+                         (frame-char-width (window-frame window))))))
+          (vterm--mouse-move vterm--term
+                             (line-number-at-pos pt)
+                             ;; Columns of the window's font, which text
+                             ;; scaling makes differ from the frame's.
+                             (/ (- (car (posn-x-y posn)) x0)
+                                (window-font-width window))))))))
+
+(defun vterm-mouse-wheel-at (window posn up)
+  "Send one wheel step at POSN in WINDOW to its terminal; UP is its direction.
+POSN nil means the mouse pointer.
+The step goes to the application as a mouse report when it asked for
+mouse reporting, or as `vterm-alternate-scroll-lines' arrow keys on the
+alternate screen.  Return nil, sending nothing, when neither applies."
+  (with-current-buffer (window-buffer window)
+    (cond ((vterm-mouse-reporting-p)
+           (vterm--mouse-move-to window posn)
+           (vterm--mouse-button vterm--term (if up 4 5) t)
+           t)
+          ((and vterm-alternate-scroll-lines (vterm--get-altscreen vterm--term))
+           (dotimes (_ vterm-alternate-scroll-lines)
+             (vterm-send-key (if up "<up>" "<down>")))
+           t))))
+
+(defun vterm-mouse-wheel (event)
+  "Send the wheel EVENT to the application in the terminal under it."
+  (interactive "e")
+  (let ((posn (event-start event)))
+    (vterm-mouse-wheel-at (posn-window posn) posn
+                          (memq (event-basic-type event)
+                                (vterm--wheel-events t)))))
+
+(defun vterm-mouse-unreported (event)
+  "Run what EVENT without Shift does when the application ignores the mouse.
+Shift+mouse thus selects text while the application has mouse reporting
+on, as in xterm."
+  (interactive "e")
+  (let* ((type (event-convert-list
+               ;; Emacs 27 and earlier reject `click' here.
+               (append (remq 'click (remq 'shift (event-modifiers event)))
+                       (list (event-basic-type event)))))
+         (cmd (let ((vterm--mouse-unreported t))
+                (key-binding (vector type) nil nil (event-start event)))))
+    (when cmd
+      (call-interactively cmd nil (vector (cons type (cdr event)))))))
+
+(defun vterm-mouse-press (event)
+  "Report the button press EVENT, the drag after it and its release.
+Motion is reported only while the button is held: Emacs makes motion
+events only under `track-mouse', which is bound here alone.  Motion and
+release are placed by the pointer, not by their events: once the drag
+leaves the frame, an event's position can name a wrong line of WINDOW."
+  (interactive "e")
+  (let* ((start (event-start event))
+         (window (posn-window start))
+         (basic (event-basic-type event))
+         (button (pcase basic ('mouse-1 1) ('mouse-2 2) ('mouse-3 3))))
+    (select-window window)
+    (vterm--mouse-move-to window start)
+    (vterm--mouse-button vterm--term button t)
+    (track-mouse
+      (let (done)
+        (while (not done)
+          (let ((ev (read-key)))
+            (cond
+             ((mouse-movement-p ev)
+              (vterm--mouse-move-to window nil))
+             ;; The pointer crossing into another part of the frame yields
+             ;; a bare area symbol ahead of the event there.
+             ((memq ev '(menu-bar tab-bar tool-bar tab-line header-line mode-line
+                         vertical-line left-margin right-margin left-fringe
+                         right-fringe vertical-scroll-bar horizontal-scroll-bar
+                         internal-border right-divider bottom-divider)))
+             ((memq (car-safe ev) '(help-echo switch-frame select-window
+                                    focus-in focus-out)))
+             (t
+              (setq done t)
+              (cond
+               ;; The release: a click, drag, double or triple click.
+               ((and (eq (event-basic-type ev) basic)
+                     (not (memq 'down (event-modifiers ev))))
+                (vterm--mouse-move-to window nil))
+               ;; Under `track-mouse', xterm-mouse-mode turns a release
+               ;; outside the text area into a NUL, which `read-key'
+               ;; returns as C-@ or C-SPC.
+               ((and (memq ev '(0 ?\C-\s)) (not (display-graphic-p)))
+                (vterm--mouse-move-to window nil))
+               ;; Anything else ends the drag and is then handled normally.
+               (t (push ev unread-command-events)))
+              (with-current-buffer (window-buffer window)
+                (vterm--mouse-button vterm--term button nil))))))))))
 
 (defun vterm--reinsert-fake-newlines ()
   "Reinsert fake newline from `vterm--copy-mode-fake-newlines'."
