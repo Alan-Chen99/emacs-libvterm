@@ -564,6 +564,10 @@ static void adjust_topline(Term *term, emacs_env *env) {
   }
 }
 
+/* Rows -1, -1 damage nothing but still schedule a redraw.  Anything
+   term_redraw applies besides cells (title, directory, OSC 51;E code,
+   OSC 52 selection) must do that, or it waits for the next output that
+   damages a cell. */
 static void invalidate_terminal(Term *term, int start_row, int end_row) {
   if (start_row != -1 && end_row != -1) {
     term->invalid_start = MIN(term->invalid_start, start_row);
@@ -733,6 +737,7 @@ static void term_set_title(Term *term, const char *title, size_t len,
   term->title = concat(term->title, title, len, true);
   if (final) {
     term->title_changed = true;
+    invalidate_terminal(term, -1, -1);
   }
   return;
 }
@@ -1095,6 +1100,7 @@ static int handle_osc_cmd_51(Term *term, char subCmd, char *buffer) {
     term->directory = malloc(strlen(buffer) + 1);
     strcpy(term->directory, buffer);
     term->directory_changed = true;
+    invalidate_terminal(term, -1, -1);
 
     for (int i = term->cursor.row; i < term->lines_len; i++) {
       if (term->lines[i] == NULL) {
@@ -1124,6 +1130,7 @@ static int handle_osc_cmd_51(Term *term, char subCmd, char *buffer) {
 
     *(term->elisp_code_p_insert) = node;
     term->elisp_code_p_insert = &(node->next);
+    invalidate_terminal(term, -1, -1);
     return 1;
   }
   return 0;
@@ -1226,6 +1233,7 @@ static int set_selection(VTermSelectionMask mask, VTermStringFragment frag,
   }
   if (frag.final) {
     term->selection_complete = true;
+    invalidate_terminal(term, -1, -1);
   }
   return 1;
 }
@@ -1479,6 +1487,7 @@ emacs_value Fvterm_write_input(emacs_env *env, ptrdiff_t nargs,
   if (ends && generation == term->selection_generation) {
     if (ends > 0) {
       term->selection_complete = true;
+      invalidate_terminal(term, -1, -1);
     } else {
       free(term->selection_data);
       term->selection_data = NULL;
